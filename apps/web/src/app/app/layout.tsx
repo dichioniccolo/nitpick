@@ -1,43 +1,62 @@
-import Image from "next/image";
 import Link from "next/link";
 import { type ReactNode, Suspense } from "react";
 
-import { SignOutButton } from "@/components/AuthButtons";
-import { requireUser } from "@/server/session";
+import { ShellBar } from "@/components/ShellBar";
+import { dashboard, requireUser } from "@/server/session";
 
-const Account = async () => {
+const Bar = async () => {
   const user = await requireUser();
+  const repositories = await dashboard((service, current) => service.repositories(current.id));
+
+  const reviews = await dashboard((service, current) => service.recentReviews(current.id, null));
 
   return (
-    <div className="flex items-center gap-3 text-sm">
-      {user.avatarUrl !== null && (
-        <Image
-          src={user.avatarUrl}
-          alt=""
-          width={24}
-          height={24}
-          unoptimized
-          className="rounded-full"
-        />
-      )}
-      <span>{user.login}</span>
-      <SignOutButton />
-    </div>
+    <ShellBar
+      login={user.login}
+      avatarUrl={user.avatarUrl}
+      repositories={repositories.map(({ fullName, indexStatus, enabled }) => ({
+        fullName,
+        indexStatus,
+        enabled,
+      }))}
+      reviews={reviews.map(({ id, fullName, prNumber, prTitle }) => ({
+        id,
+        fullName,
+        prNumber,
+        prTitle,
+      }))}
+    />
   );
 };
 
+const BarSkeleton = () => (
+  <div aria-hidden="true" className="flex flex-1 items-center">
+    <div className="h-5 w-32 rounded-sm bg-sheet" />
+    <div className="ml-auto h-8 w-8 rounded-full bg-sheet sm:w-52" />
+  </div>
+);
+
 export default function Layout({ children }: { children: ReactNode }) {
   return (
-    <div className="mx-auto max-w-4xl px-4 sm:px-8">
-      <header className="flex h-16 items-center justify-between border-b border-rule">
-        <Link href="/app" className="text-lg font-bold">
-          nitpick
+    <div className="min-h-dvh">
+      <header className="sticky top-0 z-30 flex h-14 items-center gap-1 border-b border-rule bg-paper px-3 sm:gap-2 sm:px-6">
+        <Link href="/app" className="flex items-center gap-2 font-semibold tracking-tight">
+          <span
+            aria-hidden="true"
+            className="grid size-6 place-items-center rounded-md bg-accent text-xs font-bold text-paper"
+          >
+            ✓
+          </span>
+          <span className="hidden sm:inline">nitpick</span>
         </Link>
-        <Suspense fallback={<div aria-hidden="true" className="h-6 w-32 rounded-sm bg-rule" />}>
-          <Account />
+        <span aria-hidden="true" className="mx-1 text-soft sm:mx-2">
+          /
+        </span>
+        <Suspense fallback={<BarSkeleton />}>
+          <Bar />
         </Suspense>
       </header>
-      <main className="py-8">{children}</main>
+      <main className="mx-auto max-w-[56rem] px-4 py-8 sm:px-8 sm:py-14">{children}</main>
     </div>
   );
 }

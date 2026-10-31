@@ -14,11 +14,13 @@ export const SignInButton = ({ children, className }: { children: string; classN
   </button>
 );
 
+export const signOut = (): void => void client.signOut().then(() => window.location.assign("/"));
+
 export const SignOutButton = () => (
   <button
     type="button"
-    className="underline underline-offset-4"
-    onClick={() => void client.signOut().then(() => window.location.assign("/"))}
+    className="text-sm text-soft transition-colors duration-150 ease-out hover:text-ink"
+    onClick={signOut}
   >
     Sign out
   </button>

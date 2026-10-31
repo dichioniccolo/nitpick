@@ -24,8 +24,8 @@ const Review = async ({ params }: Props) => {
 
   return (
     <>
-      <h1 className="text-2xl font-bold">{review.prTitle}</h1>
-      <p className="text-soft">
+      <h1 className="text-3xl font-semibold tracking-tight sm:text-4xl">{review.prTitle}</h1>
+      <p className="mt-2 text-soft">
         <a
           href={`https://github.com/${fullName}/pull/${review.prNumber}`}
           className="underline underline-offset-4"
@@ -37,7 +37,8 @@ const Review = async ({ params }: Props) => {
       {review.status === "running" && <p className="mt-6">Reviewing this commit.</p>}
       {review.status === "failed" && (
         <p className="mt-6 text-del">
-          The review failed ({review.error}). Comment @nitpick review on the pull request to retry.
+          The review failed ({review.error}). Mention the App in a comment on the pull request to
+          retry.
         </p>
       )}
       {review.summary !== null && (
@@ -49,9 +50,9 @@ const Review = async ({ params }: Props) => {
         </section>
       )}
       <section className="mt-8">
-        <h2 className="text-xl font-bold">Findings</h2>
+        <h2 className="mb-3 text-lg font-semibold tracking-tight">Findings</h2>
         {findings.length === 0 && <p className="text-soft">Nothing to report on this commit.</p>}
-        <ul className="divide-y divide-rule">
+        <ul className="divide-y divide-rule rounded-2xl border border-rule bg-sheet px-5 empty:hidden">
           {findings.map((item) => (
             <li key={item.id} className="py-4">
               <p className="font-mono text-sm text-soft">
@@ -65,7 +66,7 @@ const Review = async ({ params }: Props) => {
               </p>
               <p className="mt-1 max-w-[70ch] whitespace-pre-wrap">{item.body}</p>
               {item.suggestion !== null && (
-                <pre className="mt-2 overflow-x-auto rounded-sm border border-rule bg-sheet p-3 font-mono text-sm">
+                <pre className="mt-2 overflow-x-auto rounded-lg border border-rule bg-paper p-3 font-mono text-sm">
                   {item.suggestion}
                 </pre>
               )}
@@ -80,9 +81,9 @@ const Review = async ({ params }: Props) => {
 export default function Page({ params }: Props) {
   return (
     <>
-      <p data-testid="review-shell" className="mb-2 text-sm text-soft">
-        <Link href="/app" className="underline underline-offset-4">
-          Repositories
+      <p data-testid="review-shell" className="mb-2 font-mono text-xs tracking-wider uppercase">
+        <Link href="/app/reviews" className="text-soft hover:text-ink">
+          Review
         </Link>
       </p>
       <Suspense fallback={<RowsSkeleton rows={5} />}>

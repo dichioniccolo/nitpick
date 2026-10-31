@@ -7,7 +7,10 @@ export const Confidence = ({ value }: { value: number | null }) =>
       className="inline-flex gap-0.5 align-middle"
     >
       {[1, 2, 3, 4, 5].map((tick) => (
-        <span key={tick} className={`h-3.5 w-1.5 ${tick <= value ? "bg-ink" : "bg-rule"}`} />
+        <span
+          key={tick}
+          className={`h-3.5 w-1 rounded-full ${tick <= value ? "bg-ink" : "bg-rule"}`}
+        />
       ))}
     </span>
   );

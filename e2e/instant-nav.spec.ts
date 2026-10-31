@@ -53,6 +53,7 @@ test.describe("dashboard", () => {
 
   for (const { path, marker, data } of [
     { path: "/app", marker: "repositories-shell", data: repoRow },
+    { path: "/app/reviews", marker: "reviews-shell", data: reviewRow },
     { path: `/app/repos/${repoName}`, marker: "repository-shell", data: repoHeading },
     { path: `/app/reviews/${reviewId}`, marker: "review-shell", data: reviewHeading },
   ]) {

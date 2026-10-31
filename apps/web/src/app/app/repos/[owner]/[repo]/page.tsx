@@ -45,7 +45,7 @@ const Repository = async ({ params }: Props) => {
 
   return (
     <>
-      <h1 className="text-2xl font-bold">{fullName}</h1>
+      <h1 className="text-3xl font-semibold tracking-tight break-words sm:text-4xl">{fullName}</h1>
       <div className="mt-3 flex flex-wrap items-center gap-x-6 gap-y-2 text-sm">
         <span className="text-soft">{indexSummary(repo)}</span>
         <form action={reindex}>
@@ -64,11 +64,11 @@ const Repository = async ({ params }: Props) => {
       </div>
 
       <section className="mt-10">
-        <h2 className="text-xl font-bold">Team rules</h2>
+        <h2 className="mb-1 text-lg font-semibold tracking-tight">Team rules</h2>
         <p className="text-sm text-soft">
           Nitpick checks every pull request against these. A breach is always reported.
         </p>
-        <ul className="mt-2 divide-y divide-rule">
+        <ul className="mt-3 divide-y divide-rule rounded-2xl border border-rule bg-sheet px-4 empty:hidden">
           {rules.map((rule) => (
             <li key={rule.id} className="flex items-baseline gap-4 py-2">
               <span className={`flex-1 ${rule.enabled ? "" : "text-soft line-through"}`}>
@@ -101,10 +101,13 @@ const Repository = async ({ params }: Props) => {
               required
               maxLength={2000}
               placeholder="Database calls go through a repository class"
-              className="w-full rounded-sm border border-rule bg-sheet px-3 py-2"
+              className="w-full rounded-lg border border-rule bg-sheet px-3 py-2"
             />
           </label>
-          <button type="submit" className="rounded-sm bg-ink px-4 py-2 font-medium text-paper">
+          <button
+            type="submit"
+            className="rounded-lg bg-ink px-4 py-2 font-medium text-paper transition-transform duration-150 ease-out active:scale-[0.97]"
+          >
             Add rule
           </button>
         </form>
@@ -113,7 +116,7 @@ const Repository = async ({ params }: Props) => {
       {learnings.length > 0 && (
         <section className="mt-10">
           <h2 className="text-xl font-bold">Learned from reactions</h2>
-          <ul className="mt-2 divide-y divide-rule">
+          <ul className="mt-3 divide-y divide-rule rounded-2xl border border-rule bg-sheet px-4">
             {learnings.map((item) => (
               <li key={item.id} className="flex items-baseline gap-4 py-2">
                 <span
@@ -129,7 +132,7 @@ const Repository = async ({ params }: Props) => {
       )}
 
       <section className="mt-10">
-        <h2 className="text-xl font-bold">Reviews</h2>
+        <h2 className="mb-1 text-lg font-semibold tracking-tight">Reviews</h2>
         <ReviewRows rows={reviews} />
       </section>
     </>
@@ -139,9 +142,9 @@ const Repository = async ({ params }: Props) => {
 export default function Page({ params }: Props) {
   return (
     <>
-      <p data-testid="repository-shell" className="mb-2 text-sm text-soft">
-        <Link href="/app" className="underline underline-offset-4">
-          Repositories
+      <p data-testid="repository-shell" className="mb-2 font-mono text-xs tracking-wider uppercase">
+        <Link href="/app" className="text-soft hover:text-ink">
+          Repository
         </Link>
       </p>
       <Suspense fallback={<RowsSkeleton rows={6} />}>

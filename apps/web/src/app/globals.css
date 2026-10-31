@@ -1,28 +1,23 @@
 @import "tailwindcss";
 
 @theme {
-  --color-paper: #e8ecf4;
-  --color-sheet: #f6f8fc;
-  --color-ink: #16244a;
-  --color-soft: #52608a;
-  --color-rule: #c3cbdf;
+  --color-paper: #060a14;
+  --color-sheet: #0c1120;
+  --color-raised: #141a2c;
+  --color-ink: #f3f5fb;
+  --color-soft: #8d96ad;
+  --color-rule: #1d2438;
   --color-marker: #f7df4b;
-  --color-add: #1c7a5a;
-  --color-del: #b0344c;
-  --font-sans: var(--font-familjen), system-ui, sans-serif;
-  --font-mono: var(--font-plex-mono), ui-monospace, monospace;
+  --color-accent: #7f9cff;
+  --color-warn: #f5a64b;
+  --color-add: #5fd9a6;
+  --color-del: #f2785c;
+  --font-sans: var(--font-geist), system-ui, sans-serif;
+  --font-mono: var(--font-geist-mono), ui-monospace, monospace;
 }
 
-@media (prefers-color-scheme: dark) {
-  :root {
-    --color-paper: #101a36;
-    --color-sheet: #16224a;
-    --color-ink: #e6ebf7;
-    --color-soft: #a2aecd;
-    --color-rule: #2c3a66;
-    --color-add: #5cc9a3;
-    --color-del: #f08aa0;
-  }
+:root {
+  color-scheme: dark;
 }
 
 body {
@@ -35,6 +30,18 @@ body {
 :focus-visible {
   outline: 2px solid var(--color-ink);
   outline-offset: 2px;
+}
+
+.pop {
+  transform-origin: var(--origin, top left);
+  animation: pop 150ms cubic-bezier(0.23, 1, 0.32, 1);
+}
+
+@keyframes pop {
+  from {
+    opacity: 0;
+    transform: scale(0.97);
+  }
 }
 
 /* The one moment on the page: the highlighter sweeps the buggy line, then the comment lands under it. */
@@ -62,6 +69,9 @@ body {
 }
 
 @media (prefers-reduced-motion: reduce) {
+  .pop {
+    animation: none;
+  }
   .sweep {
     animation: none;
     background-size: 100% 100%;
