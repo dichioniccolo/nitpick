@@ -13,6 +13,7 @@
     "@nitpick/identity-server": "workspace:*",
     "@nitpick/postgres": "workspace:*",
     "@nitpick/review-server": "workspace:*",
+    "@nitpick/telemetry": "workspace:*",
     "better-auth": "catalog:",
     "effect": "catalog:",
     "next": "catalog:",

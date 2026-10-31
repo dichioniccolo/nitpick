@@ -26,6 +26,9 @@ env:
   GITHUB_APP_SLUG: nitpick-app
   ANTHROPIC_MODEL: claude-opus-5-5
   WORKER_CONCURRENCY: "2"
+  # Effect exports only with both set. Spans in error are always kept; others sampled at 10%.
+  OTEL_TRACES_EXPORTER: otlp
+  OTEL_EXPORTER_OTLP_ENDPOINT: http://otel-collector.monitoring.svc.cluster.local:4318
 
 web:
   replicas: 2
@@ -39,8 +42,12 @@ worker:
   replicas: 1
   resources:
     requests: { cpu: 100m, memory: 256Mi }
-    # A repository tarball is read into memory, up to 150 MB on GitHub's measure.
+    # A compressed tarball is held in memory, plus up to 256 MB of source per repository.
     limits: { memory: 1536Mi }
+
+# kube-prometheus-stack picks these up from any namespace.
+alerts:
+  enabled: true
 
 migrations:
   backoffLimit: 1

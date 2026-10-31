@@ -15,6 +15,7 @@ import { describeFailure, GitHub, type GitHubError, toRepoRef } from "@nitpick/g
 import { Database } from "@nitpick/postgres";
 import { TreeSitter } from "@nitpick/tree-sitter";
 import { and, eq, inArray, sql } from "drizzle-orm";
+import * as Cause from "effect/Cause";
 import * as Context from "effect/Context";
 import * as Data from "effect/Data";
 import * as Effect from "effect/Effect";
@@ -27,6 +28,14 @@ export class IndexTooLarge extends Data.TaggedError("IndexTooLarge")<{ readonly 
 export class RepositoryNotFound extends Data.TaggedError("RepositoryNotFound")<{
   readonly id: number;
 }> {}
+
+export class IndexWriteFailed extends Data.TaggedError("IndexWriteFailed")<{
+  readonly reason: string;
+}> {
+  override get message(): string {
+    return this.reason;
+  }
+}
 
 export class TarballError extends Data.TaggedError("TarballError")<{ readonly cause: unknown }> {}
 
@@ -239,7 +248,13 @@ export class Indexer extends Context.Service<
                 .where(eq(repository.id, row.id));
             }),
           )
-          .pipe(Effect.orDie);
+          // Die with the summary: the query error's message holds the file contents it inserted.
+          .pipe(
+            Effect.mapError(
+              (error) => new IndexWriteFailed({ reason: describeFailure(Cause.fail(error)) }),
+            ),
+            Effect.orDie,
+          );
       });
 
       return {

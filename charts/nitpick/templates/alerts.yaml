@@ -1,0 +1,28 @@
+{{- if .Values.alerts.enabled }}
+apiVersion: monitoring.coreos.com/v1
+kind: PrometheusRule
+metadata:
+  name: {{ .Release.Name }}
+  namespace: {{ .Release.Namespace }}
+spec:
+  groups:
+    - name: nitpick
+      rules:
+        - alert: NitpickPodRestarting
+          expr: increase(kube_pod_container_status_restarts_total{namespace="{{ .Release.Namespace }}"}[15m]) > 0
+          labels: { severity: warning }
+          annotations:
+            summary: "{{ `{{ $labels.pod }}` }} restarted in the last 15 minutes"
+        - alert: NitpickOutOfMemory
+          expr: kube_pod_container_status_last_terminated_reason{namespace="{{ .Release.Namespace }}", reason="OOMKilled"} > 0
+          for: 1m
+          labels: { severity: critical }
+          annotations:
+            summary: "{{ `{{ $labels.pod }}` }} was OOM killed"
+        - alert: NitpickDown
+          expr: kube_deployment_status_replicas_available{namespace="{{ .Release.Namespace }}"} == 0
+          for: 2m
+          labels: { severity: critical }
+          annotations:
+            summary: "{{ `{{ $labels.deployment }}` }} has no available pods"
+{{- end }}

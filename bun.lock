@@ -31,6 +31,7 @@
         "@nitpick/identity-server": "workspace:*",
         "@nitpick/postgres": "workspace:*",
         "@nitpick/review-server": "workspace:*",
+        "@nitpick/telemetry": "workspace:*",
         "better-auth": "catalog:",
         "effect": "catalog:",
         "next": "catalog:",
@@ -58,6 +59,7 @@
         "@nitpick/postgres": "workspace:*",
         "@nitpick/review-domain": "workspace:*",
         "@nitpick/review-server": "workspace:*",
+        "@nitpick/telemetry": "workspace:*",
         "@nitpick/tree-sitter": "workspace:*",
         "effect": "catalog:",
       },
@@ -159,6 +161,17 @@
         "@types/node": "catalog:",
         "typescript": "catalog:",
         "vitest": "catalog:",
+      },
+    },
+    "packages/drivers/telemetry": {
+      "name": "@nitpick/telemetry",
+      "version": "0.0.0",
+      "dependencies": {
+        "effect": "catalog:",
+      },
+      "devDependencies": {
+        "@types/node": "catalog:",
+        "typescript": "catalog:",
       },
     },
     "packages/drivers/tree-sitter": {
@@ -618,6 +631,8 @@
     "@nitpick/review-tables": ["@nitpick/review-tables@workspace:packages/review/tables"],
 
     "@nitpick/review-use-cases": ["@nitpick/review-use-cases@workspace:packages/review/use-cases"],
+
+    "@nitpick/telemetry": ["@nitpick/telemetry@workspace:packages/drivers/telemetry"],
 
     "@nitpick/tree-sitter": ["@nitpick/tree-sitter@workspace:packages/drivers/tree-sitter"],
 

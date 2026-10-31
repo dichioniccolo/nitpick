@@ -16,6 +16,7 @@
     "@nitpick/postgres": "workspace:*",
     "@nitpick/review-domain": "workspace:*",
     "@nitpick/review-server": "workspace:*",
+    "@nitpick/telemetry": "workspace:*",
     "@nitpick/tree-sitter": "workspace:*",
     "effect": "catalog:"
   },

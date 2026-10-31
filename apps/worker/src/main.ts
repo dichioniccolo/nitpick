@@ -4,6 +4,7 @@ import { CodeSearch, Indexer } from "@nitpick/code-graph-server";
 import { describeFailure, GitHub } from "@nitpick/github";
 import { SyncFeedback } from "@nitpick/review-domain";
 import { Database, Postgres } from "@nitpick/postgres";
+import { Telemetry } from "@nitpick/telemetry";
 import {
   type ClaimedJob,
   Queue,
@@ -15,11 +16,13 @@ import {
 } from "@nitpick/review-server/worker";
 import { TreeSitter } from "@nitpick/tree-sitter";
 import * as Config from "effect/Config";
+import * as Data from "effect/Data";
 import * as Duration from "effect/Duration";
 import * as Effect from "effect/Effect";
 import * as Exit from "effect/Exit";
 import * as Layer from "effect/Layer";
 import * as Match from "effect/Match";
+import * as Result from "effect/Result";
 import * as Schedule from "effect/Schedule";
 import { SqlClient } from "effect/sql";
 
@@ -36,24 +39,50 @@ const handle = ({ payload }: ClaimedJob) =>
     });
   });
 
+/**
+ * Ends the job span in error, so tail sampling keeps it. The span carries only this summary:
+ * a query error's message holds its parameters, which for an index insert is file content.
+ */
+class JobFailed extends Data.TaggedError("JobFailed")<{
+  readonly message: string;
+  readonly permanent: boolean;
+}> {}
+
 const runJob = Effect.fn("worker.job.run")(function* (claimed: ClaimedJob) {
   const queue = yield* Queue;
   const { _tag: kind } = claimed.payload;
+  const repositoryId = "repositoryId" in claimed.payload ? claimed.payload.repositoryId : null;
 
-  const exit = yield* handle(claimed).pipe(
+  const jobAttributes = { "job.id": claimed.id, "job.kind": kind, "job.attempt": claimed.attempts };
+
+  const spanAttributes =
+    repositoryId === null ? jobAttributes : { ...jobAttributes, "repository.id": repositoryId };
+
+  const outcome = yield* handle(claimed).pipe(
     Effect.timeout("30 minutes"),
     Effect.raceFirst(heartbeatLoop(queue.heartbeat(claimed.id))),
     Effect.exit,
+    Effect.flatMap((exit) =>
+      Exit.isSuccess(exit)
+        ? Effect.void
+        : Effect.fail(
+            new JobFailed({
+              message: describeFailure(exit.cause),
+              permanent: isPermanent(exit.cause),
+            }),
+          ),
+    ),
+    Effect.withSpan("worker.job", { attributes: spanAttributes }),
+    Effect.result,
   );
 
-  if (Exit.isSuccess(exit)) return yield* queue.complete(claimed.id);
-  const label = describeFailure(exit.cause);
-  const repositoryId = "repositoryId" in claimed.payload ? claimed.payload.repositoryId : null;
+  if (Result.isSuccess(outcome)) return yield* queue.complete(claimed.id);
+  const { message, permanent } = outcome.failure;
 
-  yield* Effect.logError("job failed", label).pipe(
+  yield* Effect.logError("job failed", message).pipe(
     Effect.annotateLogs({ jobId: claimed.id, kind, repositoryId }),
   );
-  yield* queue.fail(claimed, label, isPermanent(exit.cause));
+  yield* queue.fail(claimed, message, permanent);
 });
 
 const consumer = Effect.gen(function* () {
@@ -106,6 +135,7 @@ const Live = Layer.mergeAll(Indexer.layer, CodeSearch.layer, Queue.layer).pipe(
   Layer.provideMerge(Layer.mergeAll(GitHub.layer, Claude.layer, Settings.layer, TreeSitter.layer)),
   Layer.provideMerge(Database.layer),
   Layer.provideMerge(Postgres.layer),
+  Layer.provideMerge(Telemetry("nitpick-worker")),
 );
 
 const program = Effect.gen(function* () {

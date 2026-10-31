@@ -143,6 +143,25 @@ export const describeFailure = (cause: Cause.Cause<unknown>): string => {
   if (Cause.hasInterruptsOnly(cause)) return "Interrupted";
   const failure = Cause.squash(cause);
 
+  /** SQLSTATE and constraint from a query error's cause chain, never its message or parameters. */
+  const postgresReason = (): ReadonlyArray<string> => {
+    let current = failure;
+
+    for (let depth = 0; depth < 5 && Predicate.hasProperty(current, "cause"); depth++) {
+      current = current.cause;
+
+      if (!Predicate.hasProperty(current, "code") || !Predicate.isString(current.code)) continue;
+
+      if (!/^[0-9A-Z]{5}$/.test(current.code)) return [];
+
+      return Predicate.hasProperty(current, "constraint") && Predicate.isString(current.constraint)
+        ? [current.code, current.constraint]
+        : [current.code];
+    }
+
+    return [];
+  };
+
   const field = (key: string): ReadonlyArray<string> => {
     const value = Predicate.hasProperty(failure, key) ? failure[key] : null;
 
@@ -152,7 +171,7 @@ export const describeFailure = (cause: Cause.Cause<unknown>): string => {
   const name = failure instanceof Error ? failure.name : "Defect";
   const [tag = name] = field("_tag");
 
-  return [tag, ...field("operation"), ...field("status")].join(" ");
+  return [tag, ...field("operation"), ...field("status"), ...postgresReason()].join(" ");
 };
 
 const call = <A>(operation: string, run: () => Promise<A>) =>
