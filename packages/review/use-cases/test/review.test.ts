@@ -154,7 +154,7 @@ describe("rendering", () => {
     assert.include(text, `fixes #${zw}12`);
     assert.include(text, `o/r#${zw}1`);
     assert.include(text, `GH-${zw}123`);
-    assert.include(text, "a@b.com");
+    assert.include(text, "a@\u200bb.com");
     assert.notInclude(text, "`");
   });
   it("neutralizes a mention however it is wrapped", () => {
@@ -220,7 +220,10 @@ describe("rendering", () => {
     assert.notInclude(sanitize("https://evil.example/?d=SECRET"), "://");
     assert.notInclude(sanitize("https://github.com.evil.example/"), "://");
     assert.notInclude(sanitize("https://github.com@evil.example/"), "://");
-    assert.notInclude(sanitize("www.evil.example"), "www.e");
+    assert.notInclude(sanitize("www.evil.example"), "www.");
+    assert.notInclude(sanitize("_www.evil.example_"), "www.");
+    assert.notInclude(sanitize("x@evil.example"), "x@e");
+    assert.include(sanitize("&commat<!-- x -->;octocat"), "@\u200b");
     assert.include(sanitize("see https://github.com/o/r"), "https://github.com/o/r");
   });
   it("keeps plain GitHub links, never as images", () => {

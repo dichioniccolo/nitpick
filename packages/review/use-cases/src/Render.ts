@@ -56,22 +56,25 @@ const liveLink = /\]\((?!https:\/\/(?:[a-z0-9-]+\.)*github\.com\/[^\s()<>&\\"']*
  * - `<` before a tag, so HTML stays text and `Array<string>` survives.
  * - `![`, `](` unless it is a plain GitHub link, and `]:`, so nothing fetches
  *   through Camo with private code in the URL and no link leaves GitHub.
- * - `@name`, `#123`, `owner/repo#123` and `GH-123`, which notify and backlink.
+ * - `@name`, addresses, `#123`, `owner/repo#123` and `GH-123`, which notify and backlink.
  * - `://` off GitHub and `www.`, so a bare URL does not autolink.
  *
  * Code spans get the same treatment, because hostile text can close them. Each
  * step is linear, and running it twice changes nothing.
  */
 export const sanitize = (text: string): string =>
-  stripComments(stripNul(text).replaceAll("&commat;", "@").replaceAll("&num;", "#"))
+  stripComments(stripNul(text))
+    .replaceAll("&commat;", "@")
+    .replaceAll("&num;", "#")
     .trim()
     .replace(/<(?=[a-zA-Z/!?]|$)/g, `$&${zeroWidthSpace}`)
     .replace(/!(?=\[)/g, `$&${zeroWidthSpace}`)
     .replace(/:(?=\/\/(?!(?:[a-z0-9-]+\.)*github\.com\/))/gi, `$&${zeroWidthSpace}`)
-    .replace(/\bwww\.(?!\u200b)/gi, `$&${zeroWidthSpace}`)
+    // Before the dot: a URL parser drops U+200B, so `www.\u200bevil.example` would still link.
+    .replace(/www(?=\.)/gi, `$&${zeroWidthSpace}`)
     .replace(liveLink, `]${zeroWidthSpace}(`)
     .replace(/\](?=:)/g, `$&${zeroWidthSpace}`)
-    .replace(/(?<![a-zA-Z0-9])@(?=[a-zA-Z0-9])/g, `$&${zeroWidthSpace}`)
+    .replace(/@(?=[a-zA-Z0-9])/g, `$&${zeroWidthSpace}`)
     .replace(/#(?=\d)|(?<=&)#(?!\u200b)/g, `$&${zeroWidthSpace}`)
     .replace(/\bGH-(?=\d)/gi, `$&${zeroWidthSpace}`);
 
