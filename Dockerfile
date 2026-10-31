@@ -9,7 +9,8 @@ ENV NEXT_TELEMETRY_DISABLED=1
 WORKDIR /repo
 RUN npm install -g --no-fund --no-audit bun@1.4.4
 COPY . .
-RUN bun install --frozen-lockfile
+# No scripts: `prepare` installs git hooks, and the image has no git.
+RUN bun install --frozen-lockfile --ignore-scripts
 ENV NODE_ENV=production
 RUN bun run --cwd apps/web build && bun run --cwd apps/worker build
 
