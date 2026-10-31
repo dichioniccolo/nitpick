@@ -26,7 +26,7 @@ export default async function setup(): Promise<void> {
     [repoName],
   );
   await client.query(
-    `insert into "user" (id, name, email, login) values ($1, 'Demo', 'demo@nitpick.test', 'demo') on conflict do nothing`,
+    `insert into "user" (id, name, email) values ($1, 'demo', 'demo@nitpick.test') on conflict do nothing`,
     [userId],
   );
   await client.query(

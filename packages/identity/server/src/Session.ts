@@ -9,7 +9,7 @@ export interface User {
 interface Session {
   readonly user: {
     readonly id: string;
-    readonly login: string;
+    readonly name: string;
     readonly image?: string | null | undefined;
   };
 }
@@ -23,7 +23,7 @@ export const userOfSession = (lookup: () => Promise<Session | null>): Effect.Eff
     Effect.map((found) =>
       found === null
         ? null
-        : { id: found.user.id, login: found.user.login, avatarUrl: found.user.image ?? null },
+        : { id: found.user.id, login: found.user.name, avatarUrl: found.user.image ?? null },
     ),
     Effect.catch((cause) => Effect.as(Effect.logWarning("session lookup failed", cause), null)),
   );

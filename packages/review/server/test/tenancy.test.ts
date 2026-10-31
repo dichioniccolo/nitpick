@@ -39,8 +39,8 @@ describe("tenant isolation", () => {
         const [alice, bob] = yield* db
           .insert(user)
           .values([
-            { name: "a", email: "a@x", login: "a" },
-            { name: "b", email: "b@x", login: "b" },
+            { name: "a", email: "a@x" },
+            { name: "b", email: "b@x" },
           ])
           .returning();
 

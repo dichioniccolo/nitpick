@@ -66,10 +66,14 @@ const makeAuth = (
     baseURL: settings.appUrl,
     telemetry: { enabled: false },
     database: pool,
-    advanced: { database: { generateId: () => uuidv7() } },
-    onAPIError: { errorURL: "/?signin=failed" },
-    user: {
-      additionalFields: { login: { type: "string", required: true, input: false } },
+    advanced: {
+      database: { generateId: () => uuidv7() },
+      // Traffic reaches the pods through Cloudflare, so the socket address is never the client's.
+      ipAddress: { ipAddressHeaders: ["cf-connecting-ip"] },
+    },
+    onAPIError: {
+      errorURL: "/?signin=failed",
+      onError: (error) => console.error("auth failure", error),
     },
     session: {
       modelName: "authSession",
@@ -82,9 +86,10 @@ const makeAuth = (
       github: {
         clientId: settings.clientId,
         clientSecret: settings.clientSecret,
+        overrideUserInfoOnSignIn: true,
         // A GitHub App without the email permission returns none, and better-auth requires one.
         mapProfileToUser: (profile) => ({
-          login: profile.login,
+          name: profile.login,
           email: profile.email ?? `${profile.id}+${profile.login}@users.noreply.github.com`,
         }),
       },

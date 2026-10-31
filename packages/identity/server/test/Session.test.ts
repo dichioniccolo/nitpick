@@ -7,7 +7,7 @@ describe("userOfSession", () => {
   it.effect("maps a session to a user", () =>
     Effect.gen(function* () {
       const user = yield* userOfSession(() =>
-        Promise.resolve({ user: { id: "1", login: "a", image: null } }),
+        Promise.resolve({ user: { id: "1", name: "a", image: null } }),
       );
 
       assert.deepStrictEqual(user, { id: "1", login: "a", avatarUrl: null });

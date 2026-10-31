@@ -78,6 +78,7 @@ jobs:
       - run: bunx playwright install --with-deps chromium
       - run: bun run e2e:build
       - run: bun run e2e
+      - run: bun run e2e:oauth
 
   chart:
     name: Helm chart

@@ -22,14 +22,14 @@ const timestamps = {
 };
 
 // `user`, `authSession`, `authAccount` and `authVerification` are better-auth's
-// tables. Column names are the ones it reads, so a rename here breaks sign-in.
+// tables. Column names are the ones it reads, so a rename here breaks sign-in. `name` holds the
+// GitHub login.
 export const user = pgTable("user", {
   id: id(),
   name: text().notNull(),
   email: text().notNull().unique(),
   emailVerified: boolean().notNull().default(false),
   image: text(),
-  login: text().notNull(),
   ...timestamps,
 });
 
