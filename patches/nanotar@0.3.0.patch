@@ -1,0 +1,30 @@
+diff --git a/dist/index.cjs b/dist/index.cjs
+index 509f670bc99bf2fd3293a7f193c9717120e2a8a8..98cd5cbfb4cb760514b21a5ee8a7872192383bd1 100644
+--- a/dist/index.cjs
++++ b/dist/index.cjs
+@@ -60,6 +60,10 @@ function parseTar(data, opts) {
+     if (name.length === 0) {
+       break;
+     }
++    const ustarPrefix = _readString(buffer, offset + 257, 6) === "ustar" ? _readString(buffer, offset + 345, 155) : "";
++    if (ustarPrefix.length > 0) {
++      name = `${ustarPrefix}/${name}`;
++    }
+     if (nextExtendedHeader) {
+       const longName = nextExtendedHeader.path || nextExtendedHeader.linkpath;
+       if (longName) {
+diff --git a/dist/index.mjs b/dist/index.mjs
+index e0a4e8b1848ac8f58bd6543604a211ae27f8ac34..d02de7dc7052a4ce3356634920f553e00461a5dc 100644
+--- a/dist/index.mjs
++++ b/dist/index.mjs
+@@ -58,6 +58,10 @@ function parseTar(data, opts) {
+     if (name.length === 0) {
+       break;
+     }
++    const ustarPrefix = _readString(buffer, offset + 257, 6) === "ustar" ? _readString(buffer, offset + 345, 155) : "";
++    if (ustarPrefix.length > 0) {
++      name = `${ustarPrefix}/${name}`;
++    }
+     if (nextExtendedHeader) {
+       const longName = nextExtendedHeader.path || nextExtendedHeader.linkpath;
+       if (longName) {

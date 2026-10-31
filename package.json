@@ -84,7 +84,8 @@
   },
   "packageManager": "bun@1.4.4",
   "patchedDependencies": {
-    "drizzle-orm@1.0.0-rc.5-ab785fc": "patches/drizzle-orm@1.0.0-rc.5-ab785fc.patch"
+    "drizzle-orm@1.0.0-rc.5-ab785fc": "patches/drizzle-orm@1.0.0-rc.5-ab785fc.patch",
+    "nanotar@0.3.0": "patches/nanotar@0.3.0.patch"
   },
   "trustedDependencies": [
     "lefthook"

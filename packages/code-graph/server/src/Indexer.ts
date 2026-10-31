@@ -51,11 +51,13 @@ export const selectSources = (
 
   for (const entry of entries) {
     if (sources.length >= maxFiles) break;
-    // GitHub prefixes every entry with `<owner>-<repo>-<sha>/`.
-    const path = entry.name.slice(entry.name.indexOf("/") + 1);
+    // GitHub prefixes every entry with `<owner>-<repo>-<sha>/`; one without it is not a repository file.
+    const root = entry.name.indexOf("/");
+    const path = entry.name.slice(root + 1);
     const data = entry.data;
 
-    if (path === "" || path.endsWith("/") || data === undefined || data.length === 0) continue;
+    if (root === -1 || path === "" || path.endsWith("/") || data === undefined || data.length === 0)
+      continue;
 
     if (
       data.length > maxFileBytes ||
