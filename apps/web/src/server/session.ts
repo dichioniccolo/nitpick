@@ -30,7 +30,7 @@ export const requireUser = cache(async (): Promise<User> => {
 
 /**
  * Run a dashboard call as the signed-in user, turning `NotFound` into Next's not-found page.
- * Every caller sits inside a `<Suspense>`, so the shell has already flushed with status 200 and
+ * Every page caller sits inside a `<Suspense>`, so the shell has already flushed with status 200 and
  * the page answers 200 with "Nothing here", never a 404 status. See instant-nav.rig.md.
  */
 export const dashboard = async <A>(

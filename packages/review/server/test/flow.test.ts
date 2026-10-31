@@ -15,7 +15,7 @@ import {
 } from "@nitpick/github";
 import { Database } from "@nitpick/postgres";
 import type { Json } from "@nitpick/review-domain";
-import { ReviewPullRequest, SyncFeedback } from "@nitpick/review-domain";
+import { IndexRepository, ReviewPullRequest, SyncFeedback } from "@nitpick/review-domain";
 import { layerMigrated, repositoryMigrations } from "@nitpick/postgres/test";
 import { finding, job, learning, review } from "@nitpick/review-tables";
 import { TreeSitter } from "@nitpick/tree-sitter";
@@ -55,6 +55,7 @@ interface State {
   configShas: Array<string>;
   pull: Partial<PullRequest>;
   failSummary: boolean;
+  failInline: boolean;
   failTarball: boolean;
   dieInClaude: boolean;
   hang: Deferred.Deferred<void> | null;
@@ -86,6 +87,7 @@ const initial = (): State => ({
   configShas: [],
   pull: {},
   failSummary: false,
+  failInline: false,
   failTarball: false,
   dieInClaude: false,
   hang: null,
@@ -135,8 +137,14 @@ const fakeGitHub: GitHubApi = {
   pullFiles: () => Effect.succeed([{ path: "src/billing.ts", status: "modified", patch }]),
   fileText: (_ref, path, sha) => Effect.sync(() => fileText(path, sha)),
   createReview: (_ref, number, _sha, comments) =>
-    state.refuseInline
-      ? Effect.fail(new GitHubError({ operation: "createReview", status: 422, cause: null }))
+    state.refuseInline || state.failInline
+      ? Effect.fail(
+          new GitHubError({
+            operation: "createReview",
+            status: state.failInline ? 502 : 422,
+            cause: null,
+          }),
+        )
       : Effect.sync(() => {
           state.comments.push(comments);
 
@@ -648,6 +656,42 @@ describe("hardening", () => {
         assert.strictEqual((yield* reviewRow(20))[0]?.status, "completed");
         assert.strictEqual((yield* findingRows(20))[0]?.githubCommentId, 100);
         assert.notInclude(state.summaries.at(-1) ?? "", "Findings outside the diff view");
+      }),
+    );
+
+    it.effect("a failed publish does not silence the finding on the next head", () =>
+      Effect.gen(function* () {
+        yield* secondRun;
+        state.failInline = true;
+        const failed = yield* Effect.exit(reviewPullRequest(opened(40)));
+        assert.isTrue(Exit.isFailure(failed));
+        assert.lengthOf(state.comments, 0);
+
+        state.failInline = false;
+        state.head = "head-after-failed-publish";
+        yield* reviewPullRequest(opened(40, state.head));
+        assert.lengthOf(state.comments, 1);
+        assert.lengthOf(state.comments[0] ?? [], 1);
+      }),
+    );
+
+    it.effect("sweeps an index row no live job owns", () =>
+      Effect.gen(function* () {
+        yield* secondRun;
+        const db = yield* Database;
+        const queue = yield* Queue;
+
+        yield* db.update(repository).set({ indexStatus: "indexing" });
+        yield* queue.enqueue(IndexRepository.make({ repositoryId: 1 }));
+        yield* queue.sweep;
+        const [held] = yield* db.select().from(repository).where(eq(repository.id, 1));
+        assert.strictEqual(held?.indexStatus, "indexing");
+
+        yield* db.delete(job);
+        yield* queue.sweep;
+        const [stuck] = yield* db.select().from(repository).where(eq(repository.id, 1));
+        assert.strictEqual(stuck?.indexStatus, "failed");
+        assert.strictEqual(stuck?.indexError, "Stuck");
       }),
     );
 

@@ -44,112 +44,36 @@ const stripComments = (text: string): string => {
   return output.join("");
 };
 
-/** Where the `(...)` opening at `open` ends: past its `)`, or at a blank line or the text's end. */
-const destinationEnd = (text: string, open: number): number => {
-  let depth = 0;
-  let index = open;
-
-  while (index < text.length) {
-    const char = text.charAt(index);
-
-    if (char === "\\") {
-      index += 2;
-      continue;
-    }
-
-    if (char === "(") depth += 1;
-
-    if (char === ")") depth -= 1;
-
-    if (depth === 0) return index + 1;
-
-    if (char === "\n" && text.charAt(index + 1) === "\n") return index;
-    index += 1;
-  }
-
-  return text.length;
-};
-
-/** No scheme and no host: GitHub resolves it inside the repository, so it reaches nobody else. */
-const isRelativeUrl = (destination: string): boolean =>
-  !/^\s*(?:[a-z][a-z0-9+.-]*:|\/\/|\\)/i.test(destination);
-
-const isGitHubUrl = (destination: string): boolean => {
-  const host = /^https?:\/\/([a-z0-9.-]+)(?:[/?#]|$)/i.exec(destination)?.[1]?.toLowerCase();
-
-  return host === "github.com" || host?.endsWith(".github.com") === true;
-};
-
-/**
- * Reduce images to alt text and links to their label, keeping a link only when
- * it points at GitHub. A bracket stack resolves nesting in one pass. `](` with
- * no opening bracket and a destination with no `)` go too, because another
- * field rendered beside this one could complete them.
- */
-const reduceLinks = (text: string): string => {
-  const output: Array<string> = [];
-  const opens: Array<number> = [];
-  let matched = -1;
-  let index = 0;
-
-  while (index < text.length) {
-    const char = text.charAt(index);
-
-    if (char === "[") opens.push(output.length);
-
-    if (char === "]") matched = opens.pop() ?? -1;
-
-    if (char !== "(" || output.at(-1) !== "]") {
-      output.push(char);
-      index += 1;
-      continue;
-    }
-
-    const end = destinationEnd(text, index);
-    const isImage = matched > 0 && output[matched - 1] === "!";
-
-    const destination = text.slice(index + 1, end - 1);
-
-    if (!isImage && (isRelativeUrl(destination) || isGitHubUrl(destination))) {
-      output.push(text.slice(index, end));
-    } else {
-      output.pop();
-
-      if (matched >= 0) output[matched] = "";
-
-      if (isImage) output[matched - 1] = "";
-
-      while (output.at(-1) === "") output.pop();
-    }
-
-    matched = -1;
-    index = end;
-  }
-
-  return output.join("");
-};
-
-/** A reference definition, also inside a quote or list item. Labels hold no bare brackets. */
-const linkDefinition = /^[ \t>*+\-0-9.)]*\[(?:[^[\]\\]|\\[\s\S])*\]:.*$/gm;
+/** A link kept as it is: plain `https://` to GitHub, with nothing a parser could decode into more. */
+const liveLink = /\]\((?!https:\/\/(?:[a-z0-9-]+\.)*github\.com\/[^\s()<>&\\"']*\))/gi;
 
 /**
  * Model text is built from untrusted PR content, so a hostile diff could steer
- * it. Remove what acts beyond the comment: HTML forges markers, images fetch
- * through Camo and carry private code in the URL, links lead off GitHub. Then
- * break what GitHub resolves in text with a zero-width space: mentions notify
- * people, `#123`, `owner/repo#123` and `GH-123` link and backlink, closing
- * keywords need a `#`. Code spans get the same treatment because hostile text
- * can close them. Every step is linear, and running it twice changes nothing.
+ * it. Comments go, since they could forge our markers. Everything else stays
+ * readable and is broken with a zero-width space, which needs no Markdown
+ * parser and so gives escapes and entities nothing to fool:
+ *
+ * - `<` before a tag, so HTML stays text and `Array<string>` survives.
+ * - `![`, `](` unless it is a plain GitHub link, and `]:`, so nothing fetches
+ *   through Camo with private code in the URL and no link leaves GitHub.
+ * - `@name`, `#123`, `owner/repo#123` and `GH-123`, which notify and backlink.
+ * - `://` off GitHub and `www.`, so a bare URL does not autolink.
+ *
+ * Code spans get the same treatment, because hostile text can close them. Each
+ * step is linear, and running it twice changes nothing.
  */
 export const sanitize = (text: string): string =>
-  reduceLinks(stripComments(stripNul(text).replaceAll("&commat;", "@").replaceAll("&num;", "#")))
-    .replace(linkDefinition, "")
-    // Breaks every tag and leaves the text readable, so `Array<string>` survives.
+  stripComments(stripNul(text).replaceAll("&commat;", "@").replaceAll("&num;", "#"))
+    .trim()
     .replace(/<(?=[a-zA-Z/!?]|$)/g, `$&${zeroWidthSpace}`)
+    .replace(/!(?=\[)/g, `$&${zeroWidthSpace}`)
+    .replace(/:(?=\/\/(?!(?:[a-z0-9-]+\.)*github\.com\/))/gi, `$&${zeroWidthSpace}`)
+    .replace(/\bwww\.(?!\u200b)/gi, `$&${zeroWidthSpace}`)
+    .replace(liveLink, `]${zeroWidthSpace}(`)
+    .replace(/\](?=:)/g, `$&${zeroWidthSpace}`)
     .replace(/(?<![a-zA-Z0-9])@(?=[a-zA-Z0-9])/g, `$&${zeroWidthSpace}`)
-    .replace(/#(?=\d)|(?<=&)#/g, `$&${zeroWidthSpace}`)
-    .replace(/\bGH-(?=\d)/gi, `$&${zeroWidthSpace}`)
-    .trim();
+    .replace(/#(?=\d)|(?<=&)#(?!\u200b)/g, `$&${zeroWidthSpace}`)
+    .replace(/\bGH-(?=\d)/gi, `$&${zeroWidthSpace}`);
 
 const badge: Readonly<Record<Severity, string>> = {
   critical: "Critical",

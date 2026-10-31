@@ -54,7 +54,7 @@ export class Queue extends Context.Service<
     readonly complete: (id: string) => Effect.Effect<void>;
     /** Forget finished jobs and delivery ids older than 14 days. */
     readonly prune: Effect.Effect<void>;
-    /** Fail jobs whose last attempt died with the worker; a crash never reaches `fail`. */
+    /** Fail jobs and index rows whose last attempt died with the worker; a crash never reaches `fail`. */
     readonly sweep: Effect.Effect<void>;
     /** Back off and retry, or stop at `permanent` or the attempt limit. */
     readonly fail: (claimed: ClaimedJob, error: string, permanent: boolean) => Effect.Effect<void>;
@@ -149,12 +149,18 @@ export class Queue extends Context.Service<
           sql`delete from job where status in ('done', 'failed') and "createdAt" < now() - interval '14 days'`,
           sql`delete from webhook_delivery where "receivedAt" < now() - interval '14 days'`,
         ]).pipe(Effect.asVoid, Effect.orDie),
-        sweep: sql`
-          update job set status = 'failed', "lockedUntil" = null, "lastError" = 'LeaseExpired'
-          where status = 'running' and "lockedUntil" < now() and attempts >= ${maxAttempts}`.pipe(
-          Effect.asVoid,
-          Effect.orDie,
-        ),
+        sweep: Effect.all([
+          sql`
+            update job set status = 'failed', "lockedUntil" = null, "lastError" = 'LeaseExpired'
+            where status = 'running' and "lockedUntil" < now() and attempts >= ${maxAttempts}`,
+          // A crash skips the indexer's own failure write, so `indexing` needs a live job to stand.
+          sql`
+            update repository set "indexStatus" = 'failed', "indexError" = 'Stuck'
+            where "indexStatus" = 'indexing' and not exists (
+              select 1 from job
+              where job."dedupeKey" = 'index:' || repository.id and job.status in ('queued', 'running')
+            )`,
+        ]).pipe(Effect.asVoid, Effect.orDie),
         fail: ({ id, attempts }, error, permanent) =>
           Effect.gen(function* () {
             const message = error.slice(0, 2000);
