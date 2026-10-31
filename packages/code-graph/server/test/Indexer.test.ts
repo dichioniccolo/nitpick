@@ -1,56 +1,79 @@
+import { Readable } from "node:stream";
+import { buffer } from "node:stream/consumers";
+import { gzipSync } from "node:zlib";
+
 import { assert, describe, it } from "@effect/vitest";
-import { parseTar } from "nanotar";
+import { pack } from "tar-stream";
 
-import { selectSources } from "../src/Indexer.ts";
+import { readSources } from "../src/Indexer.ts";
 
-const encoder = new TextEncoder();
+const root = `owner-repo-${"a".repeat(40)}`;
 
-/** A file entry as `git archive` writes it: paths over 100 bytes split into `prefix` and `name`. */
-const ustarEntry = (prefix: string, name: string, content: string): Uint8Array => {
-  const body = encoder.encode(content);
-  const entry = new Uint8Array(512 + Math.ceil(body.length / 512) * 512);
-  entry.set(encoder.encode(name), 0);
-  entry.set(encoder.encode(body.length.toString(8).padStart(11, "0")), 124);
-  entry.set(encoder.encode("0"), 156);
-  entry.set(encoder.encode("ustar\u000000"), 257);
-  entry.set(encoder.encode(prefix), 345);
-  entry.set(body, 512);
+const tarball = async (files: ReadonlyArray<readonly [string, string]>): Promise<Uint8Array> => {
+  const archive = pack();
 
-  return entry;
+  for (const [name, content] of files) archive.entry({ name }, content);
+  archive.finalize();
+
+  return gzipSync(await buffer(Readable.from(archive)));
 };
 
-const archive = (entries: ReadonlyArray<Uint8Array>): Uint8Array => {
-  const output = new Uint8Array(entries.reduce((sum, entry) => sum + entry.length, 1024));
-  let offset = 0;
+describe("readSources", () => {
+  it("keeps full paths whether tar splits them into a prefix or a pax header", async () => {
+    const prefixed = `${root}/packages/one/src/index.ts`;
+    const sibling = `${root}/packages/two/src/index.ts`;
+    const deep = `${root}/${"directory/".repeat(30)}Connected Services/a=b/file.ts`;
 
-  for (const entry of entries) {
-    output.set(entry, offset);
-    offset += entry.length;
-  }
-
-  return output;
-};
-
-describe("selectSources", () => {
-  it("keeps the directories of paths stored in the ustar prefix", () => {
-    const root = `owner-repo-${"a".repeat(40)}`;
-
-    const entries = parseTar(
-      archive([
-        ustarEntry(`${root}/packages/one/src`, "index.ts", "one"),
-        ustarEntry(`${root}/packages/two/src`, "index.ts", "two"),
-        ustarEntry("", `${root}/LICENSE`, "MIT"),
+    const sources = await readSources(
+      await tarball([
+        [prefixed, "one"],
+        [sibling, "two"],
+        [deep, "deep"],
+        [`${root}/LICENSE`, "MIT"],
       ]),
     );
 
-    assert.deepStrictEqual(selectSources(entries), [
-      { path: "packages/one/src/index.ts", content: "one" },
-      { path: "packages/two/src/index.ts", content: "two" },
-      { path: "LICENSE", content: "MIT" },
-    ]);
+    assert.deepStrictEqual(
+      sources.map((source) => source.path),
+      [
+        "packages/one/src/index.ts",
+        "packages/two/src/index.ts",
+        deep.slice(root.length + 1),
+        "LICENSE",
+      ],
+    );
   });
 
-  it("skips entries outside the archive root", () => {
-    assert.deepStrictEqual(selectSources([{ name: "index.ts", data: encoder.encode("lost") }]), []);
+  it("skips binaries, build output, and entries outside the archive root", async () => {
+    const sources = await readSources(
+      await tarball([
+        ["index.ts", "lost"],
+        [`${root}/dist/app.js`, "built"],
+        [`${root}/logo.bin`, "\u0000binary"],
+        [`${root}/app.ts`, "kept"],
+      ]),
+    );
+
+    assert.deepStrictEqual(sources, [{ path: "app.ts", content: "kept" }]);
+  });
+
+  it("keeps one row for a repeated path", async () => {
+    const sources = await readSources(
+      await tarball([
+        [`${root}/app.ts`, "first"],
+        [`${root}/app.ts`, "second"],
+      ]),
+    );
+
+    assert.deepStrictEqual(sources, [{ path: "app.ts", content: "second" }]);
+  });
+
+  it("rejects a corrupt archive", async () => {
+    const failure = await readSources(new Uint8Array([1, 2, 3])).then(
+      () => "resolved",
+      () => "rejected",
+    );
+
+    assert.strictEqual(failure, "rejected");
   });
 });

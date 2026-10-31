@@ -17,11 +17,12 @@
     "@nitpick/tree-sitter": "workspace:*",
     "drizzle-orm": "catalog:",
     "effect": "catalog:",
-    "nanotar": "catalog:"
+    "tar-stream": "catalog:"
   },
   "devDependencies": {
     "@effect/vitest": "catalog:",
     "@types/node": "catalog:",
+    "@types/tar-stream": "catalog:",
     "typescript": "catalog:",
     "vitest": "catalog:"
   }

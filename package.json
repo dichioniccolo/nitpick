@@ -21,6 +21,7 @@
       "@types/node": "^26.6.5",
       "@types/react": "19.3.0",
       "@types/react-dom": "19.3.0",
+      "@types/tar-stream": "3.1.5",
       "drizzle-kit": "1.0.0-rc.5-ab785fc",
       "drizzle-orm": "1.0.0-rc.5-ab785fc",
       "effect": "4.0.6",
@@ -30,6 +31,7 @@
       "react": "19.3.1",
       "react-dom": "19.3.1",
       "tailwindcss": "^4",
+      "tar-stream": "3.2.2",
       "tree-sitter-wasms": "0.1.13",
       "typescript": "^7.0.2",
       "vitest": "^5.0.5",
@@ -84,8 +86,7 @@
   },
   "packageManager": "bun@1.4.4",
   "patchedDependencies": {
-    "drizzle-orm@1.0.0-rc.5-ab785fc": "patches/drizzle-orm@1.0.0-rc.5-ab785fc.patch",
-    "nanotar@0.3.0": "patches/nanotar@0.3.0.patch"
+    "drizzle-orm@1.0.0-rc.5-ab785fc": "patches/drizzle-orm@1.0.0-rc.5-ab785fc.patch"
   },
   "trustedDependencies": [
     "lefthook"

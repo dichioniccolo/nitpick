@@ -1,4 +1,8 @@
 import { createHash } from "node:crypto";
+import { Readable } from "node:stream";
+import { buffer } from "node:stream/consumers";
+import { pipeline } from "node:stream/promises";
+import { createGunzip } from "node:zlib";
 import { languageOf, type ParsedFile } from "@nitpick/code-graph-domain";
 import {
   codeFile,
@@ -16,7 +20,7 @@ import * as Data from "effect/Data";
 import * as Effect from "effect/Effect";
 import * as Exit from "effect/Exit";
 import * as Layer from "effect/Layer";
-import { parseTarGzip } from "nanotar";
+import { extract } from "tar-stream";
 
 export class IndexTooLarge extends Data.TaggedError("IndexTooLarge")<{ readonly sizeKb: number }> {}
 
@@ -30,6 +34,9 @@ export class TarballError extends Data.TaggedError("TarballError")<{ readonly ca
 const maxRepositoryKb = 150_000;
 const maxFileBytes = 512_000;
 const maxFiles = 20_000;
+
+/** Kept source text per repository; the worker holds all of it until the insert commits. */
+const maxSourceBytes = 256_000_000;
 const insertBatch = 500;
 
 const skippedDirectories =
@@ -42,35 +49,54 @@ export interface SourceFile {
   readonly content: string;
 }
 
-/** Which tar entries are worth indexing: small text files outside build output. */
-export const selectSources = (
-  entries: ReadonlyArray<{ readonly name: string; readonly data?: Uint8Array | undefined }>,
-): ReadonlyArray<SourceFile> => {
+const isSource = (path: string, size: number): boolean =>
+  path !== "" &&
+  !path.endsWith("/") &&
+  size > 0 &&
+  size <= maxFileBytes &&
+  !skippedDirectories.test(`/${path}`) &&
+  !skippedFiles.test(path);
+
+/**
+ * Stream a gzipped tarball and keep small text files outside build output. Skipped
+ * entries are never held, so memory follows what is indexed, not the size of the archive.
+ */
+export const readSources = async (tarball: Uint8Array): Promise<ReadonlyArray<SourceFile>> => {
   const decoder = new TextDecoder("utf-8", { fatal: false });
-  const sources: Array<SourceFile> = [];
+  const archive = extract();
+  // Keyed by path: one repeated entry must not fail the unique key of `code_file`.
+  const sources = new Map<string, string>();
+  let total = 0;
 
-  for (const entry of entries) {
-    if (sources.length >= maxFiles) break;
+  // A corrupt archive reaches the loop below as a stream error. Leaving the loop early
+  // destroys the archive, which ends the pipeline with a premature close.
+  const decompressed = pipeline(Readable.from([tarball]), createGunzip(), archive).catch(
+    () => undefined,
+  );
+
+  for await (const entry of archive) {
+    const { name, type, size = 0 } = entry.header;
     // GitHub prefixes every entry with `<owner>-<repo>-<sha>/`; one without it is not a repository file.
-    const root = entry.name.indexOf("/");
-    const path = entry.name.slice(root + 1);
-    const data = entry.data;
+    const root = name.indexOf("/");
+    const path = name.slice(root + 1);
 
-    if (root === -1 || path === "" || path.endsWith("/") || data === undefined || data.length === 0)
+    if (type !== "file" || root === -1 || !isSource(path, size)) {
+      entry.resume();
       continue;
+    }
 
-    if (
-      data.length > maxFileBytes ||
-      skippedDirectories.test(`/${path}`) ||
-      skippedFiles.test(path)
-    )
-      continue;
+    const data = await buffer(entry);
 
     if (data.subarray(0, 8000).includes(0)) continue;
-    sources.push({ path, content: decoder.decode(data) });
+    sources.set(path, decoder.decode(data));
+    total += data.length;
+
+    if (sources.size >= maxFiles || total >= maxSourceBytes) break;
   }
 
-  return sources;
+  await decompressed;
+
+  return Array.from(sources, ([path, content]) => ({ path, content }));
 };
 
 const emptyFile: ParsedFile = { symbols: [], refs: [] };
@@ -117,12 +143,10 @@ export class Indexer extends Context.Service<
 
         const tarball = yield* github.tarball(ref, sha);
 
-        const entries = yield* Effect.tryPromise({
-          try: () => parseTarGzip(tarball),
+        const sources = yield* Effect.tryPromise({
+          try: () => readSources(tarball),
           catch: (cause) => new TarballError({ cause }),
         });
-
-        const sources = selectSources(entries);
 
         const existing = yield* db
           .select({ path: codeFile.path, hash: codeFile.hash })
@@ -179,7 +203,7 @@ export class Indexer extends Context.Service<
                     path: source.path,
                     hash: hashOf(source.content),
                     language,
-                    // Postgres text cannot hold NUL, which selectSources only checks in the first 8 kB.
+                    // Postgres text cannot hold NUL, which readSources only checks in the first 8 kB.
                     content: source.content.replaceAll("\u0000", ""),
                   })),
                 );
