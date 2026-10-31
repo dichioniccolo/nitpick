@@ -8,6 +8,8 @@
     "bun.lock",
     "tools/oxlint/anti-slop/**",
     "**/.next/**",
-    "instant-nav.rig.md"
+    "instant-nav.rig.md",
+    ".claude/**",
+    ".patterns/**"
   ]
 }

@@ -29,6 +29,11 @@ Hexagonal vertical slices, from beep-effect. See `standards/ARCHITECTURE.md`.
   passes `sanitize` before GitHub, and `.nitpick.json` is read from the base commit, never the PR head.
 - Every dashboard read and write goes through `repository_member`. Absent and forbidden both answer `NotFound`.
 
+## Skills
+
+- `effect-first-development` and `schema-first-development`: read before writing Effect code or schemas.
+- `quality-review-fix-loop`: run it to close a piece of work. `.patterns/` holds the long-form examples.
+
 ## Testing
 
 Tests live in `test/` beside `src/`. Use `it.effect` with `assert` from `@effect/vitest`. Database tests run on
