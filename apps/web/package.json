@@ -6,11 +6,10 @@
   "scripts": {
     "build": "next build",
     "check": "next typegen && tsc --noEmit -p tsconfig.json",
-    "dev": "next dev",
+    "dev": "bun --env-file=../../.env run next dev",
     "start": "next start"
   },
   "dependencies": {
-    "@nitpick/code-graph-tables": "workspace:*",
     "@nitpick/identity-server": "workspace:*",
     "@nitpick/postgres": "workspace:*",
     "@nitpick/review-server": "workspace:*",

@@ -1,7 +1,7 @@
 import { BunRuntime } from "@effect/platform-bun";
 import { Claude } from "@nitpick/anthropic";
 import { CodeSearch, Indexer } from "@nitpick/code-graph-server";
-import { GitHub } from "@nitpick/github";
+import { describeFailure, GitHub } from "@nitpick/github";
 import { SyncFeedback } from "@nitpick/review-domain";
 import { Database, Postgres } from "@nitpick/postgres";
 import {
@@ -9,11 +9,11 @@ import {
   Queue,
   reviewPullRequest,
   Settings,
+  sweepStuckReviews,
   syncFeedback,
   syncInstallation,
 } from "@nitpick/review-server/worker";
 import { TreeSitter } from "@nitpick/tree-sitter";
-import * as Cause from "effect/Cause";
 import * as Config from "effect/Config";
 import * as Duration from "effect/Duration";
 import * as Effect from "effect/Effect";
@@ -22,6 +22,8 @@ import * as Layer from "effect/Layer";
 import * as Match from "effect/Match";
 import * as Schedule from "effect/Schedule";
 import { SqlClient } from "effect/sql";
+
+import { heartbeatLoop, isPermanent, surviveFailure } from "./loop.ts";
 
 const handle = ({ payload }: ClaimedJob) =>
   Effect.gen(function* () {
@@ -34,46 +36,24 @@ const handle = ({ payload }: ClaimedJob) =>
     });
   });
 
-/** Whether retrying can help: bad input, oversized repositories and refusals stay as they are. */
-const isPermanent = (error: {
-  readonly _tag: string;
-  readonly retryable?: boolean;
-  readonly status?: number | null;
-}) =>
-  Match.value(error._tag).pipe(
-    Match.when("ClaudeError", () => error.retryable === false),
-    Match.when("GitHubError", () => error.status === 404 || error.status === 410),
-    Match.whenOr("AgentError", "IndexTooLarge", "RepositoryNotFound", () => true),
-    Match.orElse(() => false),
-  );
-
 const runJob = Effect.fn("worker.job.run")(function* (claimed: ClaimedJob) {
   const queue = yield* Queue;
-
-  // Renews the lease while the job runs; losing the race interrupts it.
-  const heartbeat = Effect.sleep("1 minute").pipe(
-    Effect.andThen(queue.heartbeat(claimed.id)),
-    Effect.forever,
-  );
+  const { _tag: kind } = claimed.payload;
 
   const exit = yield* handle(claimed).pipe(
     Effect.timeout("30 minutes"),
-    Effect.raceFirst(heartbeat),
+    Effect.raceFirst(heartbeatLoop(queue.heartbeat(claimed.id))),
     Effect.exit,
   );
 
   if (Exit.isSuccess(exit)) return yield* queue.complete(claimed.id);
-  const failure = Cause.squash(exit.cause);
+  const label = describeFailure(exit.cause);
+  const repositoryId = "repositoryId" in claimed.payload ? claimed.payload.repositoryId : null;
 
-  // SAFETY: every failure here is a tagged error or a defect; a defect has neither field.
-  const tagged = failure as {
-    readonly _tag: string;
-    readonly retryable?: boolean;
-    readonly status?: number | null;
-  };
-
-  yield* Effect.logError("job failed", claimed.payload._tag, Cause.pretty(exit.cause));
-  yield* queue.fail(claimed, Cause.pretty(exit.cause), isPermanent(tagged));
+  yield* Effect.logError("job failed", label).pipe(
+    Effect.annotateLogs({ jobId: claimed.id, kind, repositoryId }),
+  );
+  yield* queue.fail(claimed, label, isPermanent(exit.cause));
 });
 
 const consumer = Effect.gen(function* () {
@@ -82,14 +62,19 @@ const consumer = Effect.gen(function* () {
 
   if (claimed === null) return yield* Effect.sleep("2 seconds");
   yield* runJob(claimed);
-}).pipe(Effect.forever);
+}).pipe(surviveFailure("worker iteration failed"), Effect.forever);
 
 /** GitHub sends no event for reactions, so feedback runs on a timer. */
 const housekeeping = Effect.gen(function* () {
   const queue = yield* Queue;
   yield* queue.enqueue(SyncFeedback.make({}));
+  yield* queue.sweep;
+  yield* sweepStuckReviews;
   yield* queue.prune;
-}).pipe(Effect.repeat(Schedule.spaced(Duration.minutes(30))));
+}).pipe(
+  surviveFailure("housekeeping failed"),
+  Effect.repeat(Schedule.spaced(Duration.minutes(30))),
+);
 
 /** Kubernetes probes this; it answers while the database does. */
 const health = Effect.gen(function* () {

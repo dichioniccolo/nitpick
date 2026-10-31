@@ -1,13 +1,20 @@
 import { createHash } from "node:crypto";
 import { languageOf, type ParsedFile } from "@nitpick/code-graph-domain";
-import { codeFile, codeRef, codeSymbol, repository } from "@nitpick/code-graph-tables";
-import { GitHub, type GitHubError, toRepoRef } from "@nitpick/github";
+import {
+  codeFile,
+  codeRef,
+  codeSymbol,
+  installation,
+  repository,
+} from "@nitpick/code-graph-tables";
+import { describeFailure, GitHub, type GitHubError, toRepoRef } from "@nitpick/github";
 import { Database } from "@nitpick/postgres";
 import { TreeSitter } from "@nitpick/tree-sitter";
 import { and, eq, inArray, sql } from "drizzle-orm";
 import * as Context from "effect/Context";
 import * as Data from "effect/Data";
 import * as Effect from "effect/Effect";
+import * as Exit from "effect/Exit";
 import * as Layer from "effect/Layer";
 import { parseTarGzip } from "nanotar";
 
@@ -99,11 +106,9 @@ export class Indexer extends Context.Service<
 
       const refresh = Effect.fn("code-graph.index.refresh")(function* (
         row: typeof repository.$inferSelect,
+        sha: string,
       ) {
         const ref = toRepoRef(row.installationId, row.fullName);
-        const sha = yield* github.branchSha(ref, row.defaultBranch);
-
-        if (sha === row.indexedSha && row.indexStatus === "ready") return;
         const sizeKb = yield* github.repositorySizeKb(ref);
 
         if (sizeKb > maxRepositoryKb) return yield* new IndexTooLarge({ sizeKb });
@@ -213,25 +218,41 @@ export class Indexer extends Context.Service<
 
       return {
         indexRepository: Effect.fn("code-graph.index.run")(function* (repositoryId: number) {
-          const [row] = yield* db
-            .select()
+          const [found] = yield* db
+            .select({ row: repository, suspended: installation.suspended })
             .from(repository)
+            .innerJoin(installation, eq(installation.id, repository.installationId))
             .where(eq(repository.id, repositoryId))
             .pipe(Effect.orDie);
 
-          if (row === undefined) return yield* new RepositoryNotFound({ id: repositoryId });
-          yield* db
-            .update(repository)
-            .set({ indexStatus: "indexing" })
-            .where(eq(repository.id, repositoryId))
-            .pipe(Effect.orDie);
-          yield* refresh(row).pipe(
-            Effect.tapError((error) =>
-              db
-                .update(repository)
-                .set({ indexStatus: "failed", indexError: error._tag })
-                .where(eq(repository.id, repositoryId))
-                .pipe(Effect.orDie),
+          if (found === undefined) return yield* new RepositoryNotFound({ id: repositoryId });
+
+          if (found.suspended) return;
+          const { row } = found;
+
+          yield* Effect.gen(function* () {
+            const sha = yield* github.branchSha(
+              toRepoRef(row.installationId, row.fullName),
+              row.defaultBranch,
+            );
+
+            if (sha === row.indexedSha && row.indexStatus === "ready") return;
+            yield* db
+              .update(repository)
+              .set({ indexStatus: "indexing" })
+              .where(eq(repository.id, repositoryId))
+              .pipe(Effect.orDie);
+            yield* refresh(row, sha);
+          }).pipe(
+            // Finalizers run uninterruptibly, so a defect or a timeout also clears `indexing`.
+            Effect.onExit((exit) =>
+              Exit.isSuccess(exit)
+                ? Effect.void
+                : db
+                    .update(repository)
+                    .set({ indexStatus: "failed", indexError: describeFailure(exit.cause) })
+                    .where(eq(repository.id, repositoryId))
+                    .pipe(Effect.orDie),
             ),
           );
         }),

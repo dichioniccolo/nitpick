@@ -17,6 +17,8 @@ const Live = Dashboard.layer.pipe(
   Layer.provideMerge(layerMigrated(repositoryMigrations)),
 );
 
+const someone = "01960000-0000-7000-8000-00000000000a";
+
 const denied = <A>(attempt: Effect.Effect<A, NotFound>) =>
   Effect.map(Effect.flip(attempt), (error) => assert.instanceOf(error, NotFound));
 
@@ -91,6 +93,42 @@ describe("tenant isolation", () => {
         // Losing access on GitHub removes it at the next sign-in.
         yield* replaceMembership(alice.id, []);
         assert.lengthOf(yield* dashboard.repositories(alice.id), 0);
+      }),
+    );
+
+    it.effect("a malformed review id answers NotFound, not a Postgres error", () =>
+      Effect.gen(function* () {
+        const dashboard = yield* Dashboard;
+        yield* denied(dashboard.review(someone, "abc"));
+        yield* denied(dashboard.review(someone, ""));
+      }),
+    );
+
+    it.effect("a malformed rule id answers NotFound, not a Postgres error", () =>
+      Effect.gen(function* () {
+        const dashboard = yield* Dashboard;
+        yield* denied(dashboard.setRuleEnabled(someone, "abc", false));
+        yield* denied(dashboard.deleteRule(someone, "abc"));
+      }),
+    );
+
+    it.effect("a repository id that is not a bigint answers NotFound", () =>
+      Effect.forEach([Number.NaN, Number.POSITIVE_INFINITY, 1e20, 1.5], (id) =>
+        Effect.gen(function* () {
+          const dashboard = yield* Dashboard;
+          yield* denied(dashboard.rules(someone, id));
+          yield* denied(dashboard.learnings(someone, id));
+          yield* denied(dashboard.addRule({ id: someone, login: "a" }, id, "x"));
+          yield* denied(dashboard.setRepositoryEnabled(someone, id, false));
+          yield* denied(dashboard.reindex(someone, id));
+        }),
+      ),
+    );
+
+    it.effect("a repository name with a NUL answers NotFound", () =>
+      Effect.gen(function* () {
+        const dashboard = yield* Dashboard;
+        yield* denied(dashboard.repository(someone, "acme/\u0000"));
       }),
     );
   });

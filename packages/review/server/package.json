@@ -11,9 +11,7 @@
     "check": "tsc --noEmit -p tsconfig.json"
   },
   "dependencies": {
-    "@anthropic-ai/sdk": "catalog:",
     "@nitpick/anthropic": "workspace:*",
-    "@nitpick/code-graph-domain": "workspace:*",
     "@nitpick/code-graph-server": "workspace:*",
     "@nitpick/code-graph-tables": "workspace:*",
     "@nitpick/github": "workspace:*",

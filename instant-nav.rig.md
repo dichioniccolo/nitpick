@@ -12,7 +12,15 @@ shell commits alone.
   `loading.tsx` above a layout.
 - `requireUser` settles `headers()` before any Effect runs: a fiber reads the clock when it starts,
   which Cache Components rejects during a prerender.
-- A new page gets a `data-testid="<page>-shell"` on a shell node, never on data, and a test.
+- A new page gets a `data-testid="<page>-shell"` on a shell node, never on data, and a test that
+  asserts its data has count 0 under `instant()` and is visible after, so the lock is proven to hold.
+
+## Walls
+
+- `notFound()` fires inside a `<Suspense>`, after the static shell has flushed with status 200. A
+  missing or forbidden page therefore answers 200 and renders "Nothing here", never a 404 status.
+  Both answers are the same, which is what tenancy needs. Do not move the read above the boundary
+  to get a 404: the shell would stop being instant. The guard pins this for `/app/repos/x/y`.
 
 ## Run it
 

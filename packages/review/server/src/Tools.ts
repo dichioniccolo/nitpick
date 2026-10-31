@@ -43,8 +43,8 @@ const Path = S.Struct({ path: S.String });
 
 const Read = S.Struct({
   path: S.String,
-  startLine: S.optional(S.Number),
-  endLine: S.optional(S.Number),
+  startLine: S.optional(S.Int),
+  endLine: S.optional(S.Int),
 });
 
 const text = { type: "string" } as const;

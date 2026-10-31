@@ -2,6 +2,8 @@
   "strictness": "balanced",
   "triggerOnUpdates": false,
   "skipDrafts": true,
+  "ignoreAuthors": ["dependabot[bot]"],
+  "baseBranches": ["main", "release"],
   "ignorePaths": ["*.generated.ts", "docs/**"],
   "skipLabels": ["no-review"],
   "rules": ["Database calls go through a repository class"],

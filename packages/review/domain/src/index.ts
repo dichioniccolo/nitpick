@@ -52,17 +52,21 @@ export const Strictness = S.Literals(["strict", "balanced", "relaxed"]);
 
 export type Strictness = typeof Strictness.Type;
 
+/** A bounded list, so a config cannot inflate every prompt or the glob work per file. */
+const cappedStrings = (maxItemLength: number) =>
+  S.Array(S.String.check(S.isMaxLength(maxItemLength))).check(S.isMaxLength(50));
+
 /** `.nitpick.json` at the repository root. Every field is optional. */
 export const RepoConfig = S.Struct({
   strictness: S.optionalKey(Strictness),
   triggerOnUpdates: S.optionalKey(S.Boolean),
   skipDrafts: S.optionalKey(S.Boolean),
-  ignorePaths: S.optionalKey(S.Array(S.String)),
-  ignoreAuthors: S.optionalKey(S.Array(S.String)),
-  skipLabels: S.optionalKey(S.Array(S.String)),
-  baseBranches: S.optionalKey(S.Array(S.String)),
-  rules: S.optionalKey(S.Array(S.String)),
-  maxFindings: S.optionalKey(S.Number),
+  ignorePaths: S.optionalKey(cappedStrings(200)),
+  ignoreAuthors: S.optionalKey(cappedStrings(255)),
+  skipLabels: S.optionalKey(cappedStrings(255)),
+  baseBranches: S.optionalKey(cappedStrings(255)),
+  rules: S.optionalKey(cappedStrings(2000)),
+  maxFindings: S.optionalKey(S.Int.check(S.isBetween({ minimum: 1, maximum: 50 }))),
   diagram: S.optionalKey(S.Boolean),
 });
 

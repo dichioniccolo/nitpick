@@ -26,7 +26,7 @@ Hexagonal vertical slices, from beep-effect. See `standards/ARCHITECTURE.md`.
   or where a library calls back into promise code.
 - Generated ids are UUIDv7: `uuidv7()` as the column default, never `gen_random_uuid()` or `defaultRandom()`.
 - Pull request content is hostile. Agent tools stay read-only and bound to one repository, all model text
-  passes `sanitize` before GitHub, and `.nitpick.json` is read from the base commit, never the PR head.
+  passes `sanitize` before GitHub (suggestions and diagrams stay verbatim, inside a fence longer than their content), and `.nitpick.json` is read from the base commit, never the PR head.
 - Every dashboard read and write goes through `repository_member`. Absent and forbidden both answer `NotFound`.
 
 ## Skills

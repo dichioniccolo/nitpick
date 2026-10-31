@@ -102,7 +102,7 @@ const jobsFor = Effect.fnUntraced(function* (event: string, payload: Json) {
             set: { suspended, accountLogin: item.account.login },
           });
 
-        return [SyncInstallation.make({ installationId: item.id })];
+        return suspended ? none : [SyncInstallation.make({ installationId: item.id })];
       }),
     ),
     Match.when("installation_repositories", () =>
@@ -172,8 +172,9 @@ const jobsFor = Effect.fnUntraced(function* (event: string, payload: Json) {
 });
 
 /**
- * Record the delivery and queue its jobs in one transaction: GitHub redelivers
- * on failure, and a delivery seen before does nothing. Jobs for a repository
+ * Record the delivery and queue its jobs in one transaction. GitHub does not
+ * redeliver on its own; this check stops a replayed delivery id, whether from
+ * a manual redelivery or an attacker holding a signed body. Jobs for a repository
  * this database does not hold yet are dropped, since nothing could run them.
  */
 export const handleWebhook = Effect.fn("review.webhook.handle")(function* (

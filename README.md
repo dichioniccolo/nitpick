@@ -11,7 +11,8 @@ It reproduces the behavior of hosted reviewers such as Greptile. It shares no co
 - Reviews a PR when it opens, or on `@<app-slug> review`. Set `triggerOnUpdates` to review each push.
 - Reviews PRs only from owners, members and collaborators, and answers mentions only from them, so a
   stranger cannot spend your API budget.
-- Learns from thumbs up and down on its comments, and from team rules in the dashboard.
+- Learns from thumbs up and down on its comments, counting only users with write access, and from
+  team rules in the dashboard.
 - Reads `.nitpick.json` from the base commit, so a PR cannot weaken its own review. See
   `.nitpick.example.json`.
 
@@ -38,7 +39,8 @@ Create one at `https://github.com/settings/apps/new`.
 - Callback URL: `<APP_URL>/api/auth/callback/github`.
 - Repository permissions: Contents read, Metadata read, Pull requests read and write, Issues read and write.
 - Account permissions: Email addresses read (optional).
-- Events: Installation repositories, Pull request, Push, Issue comment.
+- Events: Pull request, Push, Issue comment. Every App also receives `installation` and
+  `installation_repositories` by default; they are not selectable.
 
 ## Local development
 

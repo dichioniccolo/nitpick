@@ -1,4 +1,9 @@
-import Anthropic, { APIConnectionError, APIError, RateLimitError } from "@anthropic-ai/sdk";
+import Anthropic, {
+  AnthropicError,
+  APIConnectionError,
+  APIError,
+  APIUserAbortError,
+} from "@anthropic-ai/sdk";
 import * as Config from "effect/Config";
 import * as Context from "effect/Context";
 import * as Data from "effect/Data";
@@ -29,9 +34,26 @@ export interface TurnRequest {
   readonly messages: ReadonlyArray<MessageParam>;
 }
 
-const toError = (cause: unknown): ClaudeError => {
-  if (cause instanceof RateLimitError)
-    return new ClaudeError({ status: 429, retryable: true, cause });
+/** `error.type` values worth another attempt, as carried by an HTTP body or a mid-stream SSE `error` event. */
+const retryableTypes: ReadonlySet<string> = new Set([
+  "overloaded_error",
+  "api_error",
+  "rate_limit_error",
+  "timeout_error",
+]);
+
+/** What `BetaMessageStream` throws when the connection dies before `message_stop`. */
+const truncated = /^(stream ended without|request ended without)/;
+
+/**
+ * Classify anything `finalMessage()` rejects with. The stream's own errors have
+ * no HTTP status: an SSE `error` event is an `APIError` with `status` undefined
+ * and the kind in `type`, and a dropped socket is a bare `AnthropicError`
+ * wrapping the transport error in `cause`.
+ */
+export const toClaudeError = (cause: unknown): ClaudeError => {
+  if (cause instanceof APIUserAbortError)
+    return new ClaudeError({ status: null, retryable: false, cause });
 
   if (cause instanceof APIConnectionError)
     return new ClaudeError({ status: null, retryable: true, cause });
@@ -39,7 +61,17 @@ const toError = (cause: unknown): ClaudeError => {
   if (cause instanceof APIError) {
     const status = cause.status ?? null;
 
-    return new ClaudeError({ status, retryable: status !== null && status >= 500, cause });
+    const retryable =
+      (status !== null && (status === 429 || status >= 500)) ||
+      (cause.type !== null && retryableTypes.has(cause.type));
+
+    return new ClaudeError({ status, retryable, cause });
+  }
+
+  if (cause instanceof AnthropicError) {
+    const retryable = cause.cause instanceof Error || truncated.test(cause.message);
+
+    return new ClaudeError({ status: null, retryable, cause });
   }
 
   return new ClaudeError({ status: null, retryable: false, cause });
@@ -85,7 +117,7 @@ export class Claude extends Context.Service<
                   { signal },
                 )
                 .finalMessage(),
-            catch: toError,
+            catch: toClaudeError,
           }).pipe(Effect.withSpan("claude.turn")),
       };
     }),

@@ -31,8 +31,15 @@ jobs:
       - run: bun install --frozen-lockfile
       - run: bun run lint
       - run: bun run format
+      - run: bun run sync
       - run: bun run check
       - run: bun run test
+      # A new migration is an untracked file, which a plain `git diff` would not show.
+      - name: Migrations match the tables
+        run: |
+          bunx drizzle-kit generate
+          git add --intent-to-add migrations
+          git diff --exit-code migrations
 
   instant-nav:
     name: Instant navigation guard

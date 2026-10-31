@@ -1,8 +1,9 @@
-import { Claude, type ClaudeError } from "@nitpick/anthropic";
-import { repository } from "@nitpick/code-graph-tables";
+import { randomBytes } from "node:crypto";
+import { Claude } from "@nitpick/anthropic";
+import { installation, repository } from "@nitpick/code-graph-tables";
 import {
+  describeFailure,
   GitHub,
-  type GitHubError,
   type PullRequest,
   type RepoRef,
   toRepoRef,
@@ -27,12 +28,14 @@ import {
   sanitize,
   selectFindings,
   skipReason,
+  summaryMarker,
 } from "@nitpick/review-use-cases";
-import { and, desc, eq, isNotNull, sql } from "drizzle-orm";
+import { and, desc, eq, isNotNull, lt, sql } from "drizzle-orm";
 import * as Effect from "effect/Effect";
+import * as Exit from "effect/Exit";
 import * as S from "effect/Schema";
 
-import { type AgentError, decoder, objectSchema, runAgent } from "./Agent.ts";
+import { decoder, objectSchema, runAgent } from "./Agent.ts";
 import { Settings } from "./Settings.ts";
 import { toolsFor } from "./Tools.ts";
 
@@ -110,9 +113,9 @@ const publishInline = Effect.fnUntraced(function* (
 ) {
   const github = yield* GitHub;
 
-  if (placed.length === 0) return new Map<string, number>();
+  if (placed.length === 0) return [];
 
-  const posted = yield* github
+  return yield* github
     .createReview(
       ref,
       pull.number,
@@ -131,15 +134,40 @@ const publishInline = Effect.fnUntraced(function* (
           Effect.as(Effect.logWarning("GitHub refused inline comments", error.operation), []),
       ),
     );
+});
 
-  return new Map(
-    posted.flatMap((comment) => {
+const byFingerprint = (comments: ReadonlyArray<{ readonly id: number; readonly body: string }>) =>
+  new Map(
+    comments.flatMap((comment) => {
       const fingerprint = fingerprintFromBody(comment.body);
 
       return fingerprint === null ? [] : [[fingerprint, comment.id] as const];
     }),
   );
+
+type StoredFinding = typeof finding.$inferSelect;
+
+const toPlaced = (item: StoredFinding): PlacedFinding => ({
+  path: item.path,
+  startLine: item.startLine ?? undefined,
+  line: item.line,
+  severity: item.severity,
+  category: item.category,
+  title: item.title,
+  body: item.body,
+  suggestion: item.suggestion ?? undefined,
+  fingerprint: item.fingerprint,
 });
+
+/** Fail reviews a dead worker left running. Longer than the job timeout and its retries. */
+export const sweepStuckReviews = Effect.gen(function* () {
+  const db = yield* Database;
+  yield* db
+    .update(review)
+    .set({ status: "failed", error: "Stuck", finishedAt: sql`now()` })
+    .where(and(eq(review.status, "running"), lt(review.startedAt, sql`now() - interval '2 hours'`)))
+    .pipe(Effect.orDie);
+}).pipe(Effect.withSpan("review.sweep"));
 
 export const reviewPullRequest = Effect.fn("review.pull.run")(function* (payload: {
   readonly repositoryId: number;
@@ -151,14 +179,17 @@ export const reviewPullRequest = Effect.fn("review.pull.run")(function* (payload
   const github = yield* GitHub;
   const settings = yield* Settings;
   const claude = yield* Claude;
+  const appLogin = `${settings.appSlug}[bot]`;
 
-  const [repo] = yield* db
-    .select()
+  const [found] = yield* db
+    .select({ repo: repository, suspended: installation.suspended })
     .from(repository)
+    .innerJoin(installation, eq(installation.id, repository.installationId))
     .where(eq(repository.id, payload.repositoryId))
     .pipe(Effect.orDie);
 
-  if (repo === undefined || !repo.enabled) return;
+  if (found === undefined || found.suspended || !found.repo.enabled) return;
+  const { repo } = found;
 
   const ref = toRepoRef(repo.installationId, repo.fullName);
   const pull = yield* github.pullRequest(ref, payload.prNumber);
@@ -193,7 +224,7 @@ export const reviewPullRequest = Effect.fn("review.pull.run")(function* (payload
   }
 
   const [existing] = yield* db
-    .select({ id: review.id, status: review.status })
+    .select({ id: review.id, status: review.status, summary: review.summary })
     .from(review)
     .where(
       and(
@@ -205,6 +236,18 @@ export const reviewPullRequest = Effect.fn("review.pull.run")(function* (payload
     .pipe(Effect.orDie);
 
   if (existing?.status === "completed" && !requested) return;
+
+  // Findings are saved before anything reaches GitHub, so a retry only finishes publishing.
+  // A completed row asked to review again is a new run.
+  const resuming =
+    existing !== undefined && existing.status !== "completed" && existing.summary !== null;
+
+  const restart = {
+    status: "running",
+    error: null,
+    finishedAt: null,
+    startedAt: sql`now()`,
+  } as const;
 
   const [row] = yield* db
     .insert(review)
@@ -218,7 +261,7 @@ export const reviewPullRequest = Effect.fn("review.pull.run")(function* (payload
     })
     .onConflictDoUpdate({
       target: [review.repositoryId, review.prNumber, review.headSha],
-      set: { status: "running", error: null, finishedAt: null },
+      set: resuming ? restart : { ...restart, summary: null, confidence: null, diagram: null },
     })
     .returning({ id: review.id })
     .pipe(Effect.orDie);
@@ -226,7 +269,8 @@ export const reviewPullRequest = Effect.fn("review.pull.run")(function* (payload
   if (row === undefined) return;
   const reviewId = row.id;
 
-  const work = Effect.gen(function* () {
+  /** Run the agent, then save its whole result at once. Nothing here touches the PR. */
+  const analyse = Effect.gen(function* () {
     const files = yield* github.pullFiles(ref, pull.number);
 
     const rules = yield* db
@@ -253,18 +297,21 @@ export const reviewPullRequest = Effect.fn("review.pull.run")(function* (payload
 
     const result = yield* runAgent({
       system: reviewSystem,
-      prompt: reviewPrompt({
-        title: pull.title,
-        body: pull.body,
-        author: pull.author,
-        baseBranch: pull.baseBranch,
-        files,
-        config,
-        rules: rules.map((item) => item.text),
-        noise: learned.filter((item) => item.verdict === "noise").map((item) => item.text),
-        useful: learned.filter((item) => item.verdict === "useful").map((item) => item.text),
-        previousFindings: previous.map((item) => `${item.path}: ${item.title}`),
-      }),
+      prompt: reviewPrompt(
+        {
+          title: pull.title,
+          body: pull.body,
+          author: pull.author,
+          baseBranch: pull.baseBranch,
+          files,
+          config,
+          rules: rules.map((item) => item.text),
+          noise: learned.filter((item) => item.verdict === "noise").map((item) => item.text),
+          useful: learned.filter((item) => item.verdict === "useful").map((item) => item.text),
+          previousFindings: previous.map((item) => `${item.path}: ${item.title}`),
+        },
+        randomBytes(16).toString("hex"),
+      ),
       tools,
       finish: finishTool,
       maxTurns: 30,
@@ -277,8 +324,86 @@ export const reviewPullRequest = Effect.fn("review.pull.run")(function* (payload
       new Set(previous.map((item) => item.fingerprint)),
     );
 
-    const commentIds = yield* publishInline(ref, pull, placed);
+    yield* db
+      .transaction((tx) =>
+        Effect.gen(function* () {
+          yield* tx
+            .update(review)
+            .set({
+              summary: sanitize(result.value.summary),
+              confidence: clampConfidence(result.value.confidence),
+              diagram: config.diagram ? (result.value.diagram ?? null) : null,
+              model: claude.model,
+              inputTokens: result.inputTokens,
+              outputTokens: result.outputTokens,
+            })
+            .where(eq(review.id, reviewId));
 
+          if (placed.length === 0) return;
+          yield* tx.insert(finding).values(
+            placed.map((item) => ({
+              reviewId,
+              repositoryId: repo.id,
+              prNumber: pull.number,
+              path: item.path,
+              startLine: item.startLine ?? null,
+              line: item.line,
+              severity: item.severity,
+              category: item.category,
+              title: sanitize(item.title),
+              body: sanitize(item.body),
+              suggestion: item.suggestion ?? null,
+              fingerprint: item.fingerprint,
+              githubCommentId: null,
+            })),
+          );
+        }),
+      )
+      .pipe(Effect.orDie);
+  });
+
+  /** Post what is not on GitHub yet, keeping each id as soon as it is known. */
+  const publishFindings = Effect.gen(function* () {
+    const stored = yield* db
+      .select()
+      .from(finding)
+      .where(eq(finding.reviewId, reviewId))
+      .orderBy(finding.id)
+      .pipe(Effect.orDie);
+
+    const unposted = stored.filter((item) => item.githubCommentId === null);
+
+    if (unposted.length === 0) return stored;
+
+    // Anyone can write our marker in a comment; only the App's own comments count.
+    const earlier = yield* github.listReviewComments(ref, pull.number);
+    const onThePull = byFingerprint(earlier.filter(({ author }) => author === appLogin));
+
+    const toPost = unposted.filter((item) => !onThePull.has(item.fingerprint));
+    const posted = yield* publishInline(ref, pull, toPost.map(toPlaced));
+    const ids = new Map([...onThePull, ...byFingerprint(posted)]);
+
+    const placed = unposted.flatMap((item) => {
+      const githubCommentId = ids.get(item.fingerprint);
+
+      return githubCommentId === undefined ? [] : [{ id: item.id, githubCommentId }];
+    });
+
+    yield* Effect.forEach(
+      placed,
+      ({ id, githubCommentId }) =>
+        db.update(finding).set({ githubCommentId }).where(eq(finding.id, id)),
+      { discard: true },
+    ).pipe(Effect.orDie);
+
+    return stored.map((item) => ({
+      ...item,
+      githubCommentId: item.githubCommentId ?? ids.get(item.fingerprint) ?? null,
+    }));
+  });
+
+  /** The comment to edit: the newest stored id on this PR, else one a lost write left behind. */
+  const summaryComment = Effect.gen(function* () {
     const [last] = yield* db
       .select({ commentId: review.summaryCommentId })
       .from(review)
@@ -293,67 +418,62 @@ export const reviewPullRequest = Effect.fn("review.pull.run")(function* (payload
       .limit(1)
       .pipe(Effect.orDie);
 
+    if (last?.commentId !== undefined && last.commentId !== null) return last.commentId;
+    const comments = yield* github.listIssueComments(ref, pull.number);
+
+    const ours = comments.filter(
+      ({ author, body }) => author === appLogin && body.includes(summaryMarker),
+    );
+
+    return ours.at(-1)?.id ?? null;
+  });
+
+  const work = Effect.gen(function* () {
+    if (!resuming) yield* analyse;
+
+    const stored = yield* publishFindings;
+
+    const [saved] = yield* db
+      .select({
+        summary: review.summary,
+        confidence: review.confidence,
+        diagram: review.diagram,
+      })
+      .from(review)
+      .where(eq(review.id, reviewId))
+      .pipe(Effect.orDie);
+
     const summaryCommentId = yield* github.upsertComment(
       ref,
       pull.number,
-      last?.commentId ?? null,
+      yield* summaryComment,
       renderSummary({
-        summary: result.value.summary,
-        confidence: result.value.confidence,
-        diagram: config.diagram ? result.value.diagram : undefined,
-        findings: placed,
-        unplaced: placed.filter((item) => !commentIds.has(item.fingerprint)),
+        summary: saved?.summary ?? "",
+        confidence: saved?.confidence ?? 1,
+        diagram: saved?.diagram ?? undefined,
+        findings: stored.map(toPlaced),
+        unplaced: stored.filter((item) => item.githubCommentId === null).map(toPlaced),
         reviewUrl: `${settings.appUrl}/app/reviews/${reviewId}`,
       }),
     );
 
-    if (placed.length > 0) {
-      yield* db
-        .insert(finding)
-        .values(
-          placed.map((item) => ({
-            reviewId,
-            repositoryId: repo.id,
-            prNumber: pull.number,
-            path: item.path,
-            startLine: item.startLine ?? null,
-            line: item.line,
-            severity: item.severity,
-            category: item.category,
-            title: sanitize(item.title),
-            body: sanitize(item.body),
-            suggestion: item.suggestion ?? null,
-            fingerprint: item.fingerprint,
-            githubCommentId: commentIds.get(item.fingerprint) ?? null,
-          })),
-        )
-        .pipe(Effect.orDie);
-    }
-
     yield* db
       .update(review)
-      .set({
-        status: "completed",
-        summary: sanitize(result.value.summary),
-        confidence: clampConfidence(result.value.confidence),
-        diagram: config.diagram ? (result.value.diagram ?? null) : null,
-        model: claude.model,
-        inputTokens: result.inputTokens,
-        outputTokens: result.outputTokens,
-        summaryCommentId,
-        finishedAt: sql`now()`,
-      })
+      .set({ status: "completed", summaryCommentId, finishedAt: sql`now()` })
       .where(eq(review.id, reviewId))
       .pipe(Effect.orDie);
   });
 
   yield* work.pipe(
-    Effect.tapError((error: AgentError | ClaudeError | GitHubError) =>
-      db
-        .update(review)
-        .set({ status: "failed", error: error._tag, finishedAt: sql`now()` })
-        .where(eq(review.id, reviewId))
-        .pipe(Effect.orDie),
+    // Finalizers run uninterruptibly, so a defect or a timeout also leaves `running`.
+    Effect.onExit((exit) =>
+      Exit.isSuccess(exit)
+        ? Effect.void
+        : db
+            .update(review)
+            .set({ status: "failed", error: describeFailure(exit.cause), finishedAt: sql`now()` })
+            .where(eq(review.id, reviewId))
+            .pipe(Effect.orDie),
     ),
   );
 });

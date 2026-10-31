@@ -8,6 +8,7 @@ import * as Context from "effect/Context";
 import * as Data from "effect/Data";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
+import * as S from "effect/Schema";
 
 import { Queue } from "./Queue.ts";
 
@@ -15,6 +16,25 @@ import { Queue } from "./Queue.ts";
 export class NotFound extends Data.TaggedError("NotFound")<{}> {}
 
 type Repository = typeof repository.$inferSelect;
+
+/** A `uuid` column raises 22P02 on anything else. */
+const RowId = S.String.check(S.isUUID());
+
+/** A safe integer, which NaN and a `bigint` overflow like 1e20 are not. */
+const RepositoryId = S.Int;
+
+/** GitHub's `owner/name`; a NUL in a text parameter would otherwise fail in Postgres. */
+const RepositoryName = S.String.check(S.isPattern(/^[\w.-]+\/[\w.-]+$/));
+
+/** An id that cannot name a row is absent, and fails before any query reaches Postgres. */
+const decodeId =
+  <A>(schema: S.Codec<A, A>) =>
+  (input: A): Effect.Effect<A, NotFound> =>
+    S.decodeEffect(schema)(input).pipe(Effect.mapError(() => new NotFound()));
+
+const decodeRowId = decodeId(RowId);
+const decodeRepositoryId = decodeId(RepositoryId);
+const decodeRepositoryName = decodeId(RepositoryName);
 
 export class Dashboard extends Context.Service<
   Dashboard,
@@ -74,35 +94,37 @@ export class Dashboard extends Context.Service<
       const queue = yield* Queue;
 
       const requireMember = (userId: string, repositoryId: number) =>
-        db
-          .select({ id: repositoryMember.repositoryId })
-          .from(repositoryMember)
-          .where(
-            and(
-              eq(repositoryMember.userId, userId),
-              eq(repositoryMember.repositoryId, repositoryId),
-            ),
-          )
-          .pipe(
-            Effect.orDie,
-            Effect.flatMap((rows) =>
-              rows.length === 0 ? Effect.fail(new NotFound()) : Effect.void,
-            ),
-          );
+        decodeRepositoryId(repositoryId).pipe(
+          Effect.andThen(
+            db
+              .select({ id: repositoryMember.repositoryId })
+              .from(repositoryMember)
+              .where(
+                and(
+                  eq(repositoryMember.userId, userId),
+                  eq(repositoryMember.repositoryId, repositoryId),
+                ),
+              )
+              .pipe(Effect.orDie),
+          ),
+          Effect.flatMap((rows) => (rows.length === 0 ? Effect.fail(new NotFound()) : Effect.void)),
+        );
 
       const ruleOwner = (userId: string, ruleId: string) =>
-        db
-          .select({ repositoryId: rule.repositoryId })
-          .from(rule)
-          .where(eq(rule.id, ruleId))
-          .pipe(
-            Effect.orDie,
-            Effect.flatMap(([row]) =>
-              row === undefined
-                ? Effect.fail(new NotFound())
-                : requireMember(userId, row.repositoryId),
-            ),
-          );
+        decodeRowId(ruleId).pipe(
+          Effect.andThen(
+            db
+              .select({ repositoryId: rule.repositoryId })
+              .from(rule)
+              .where(eq(rule.id, ruleId))
+              .pipe(Effect.orDie),
+          ),
+          Effect.flatMap(([row]) =>
+            row === undefined
+              ? Effect.fail(new NotFound())
+              : requireMember(userId, row.repositoryId),
+          ),
+        );
 
       return {
         repositories: (userId) =>
@@ -117,17 +139,19 @@ export class Dashboard extends Context.Service<
               Effect.map((rows) => rows.map((row) => row.item)),
             ),
         repository: (userId, fullName) =>
-          db
-            .select({ item: repository })
-            .from(repository)
-            .innerJoin(repositoryMember, eq(repositoryMember.repositoryId, repository.id))
-            .where(and(eq(repositoryMember.userId, userId), eq(repository.fullName, fullName)))
-            .pipe(
-              Effect.orDie,
-              Effect.flatMap(([row]) =>
-                row === undefined ? Effect.fail(new NotFound()) : Effect.succeed(row.item),
-              ),
+          decodeRepositoryName(fullName).pipe(
+            Effect.andThen(
+              db
+                .select({ item: repository })
+                .from(repository)
+                .innerJoin(repositoryMember, eq(repositoryMember.repositoryId, repository.id))
+                .where(and(eq(repositoryMember.userId, userId), eq(repository.fullName, fullName)))
+                .pipe(Effect.orDie),
             ),
+            Effect.flatMap(([row]) =>
+              row === undefined ? Effect.fail(new NotFound()) : Effect.succeed(row.item),
+            ),
+          ),
         recentReviews: (userId, repositoryId) =>
           db
             .select({ item: review, fullName: repository.fullName, findings: count(finding.id) })
@@ -156,6 +180,8 @@ export class Dashboard extends Context.Service<
             ),
         review: (userId, id) =>
           Effect.gen(function* () {
+            yield* decodeRowId(id);
+
             const [row] = yield* db
               .select({ item: review, fullName: repository.fullName })
               .from(review)

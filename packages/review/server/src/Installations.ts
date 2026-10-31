@@ -21,7 +21,7 @@ export const syncInstallation = Effect.fn("review.installation.sync")(function* 
     .where(eq(installation.id, installationId))
     .pipe(Effect.orDie);
 
-  if (known === undefined) return;
+  if (known === undefined || known.suspended) return;
   const repositories = yield* github.listRepositories(installationId);
   yield* db
     .delete(repository)

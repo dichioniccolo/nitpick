@@ -13,13 +13,16 @@ import {
   uuid,
 } from "drizzle-orm/pg-core";
 
-/** GitHub retries webhooks; a delivery id seen before is dropped. */
+/** GitHub does not redeliver on its own; a delivery id seen before is a replay and is dropped. */
 export const webhookDelivery = pgTable("webhook_delivery", {
   id: text().primaryKey(),
   receivedAt: timestamp({ withTimezone: true }).notNull().defaultNow(),
 });
 
-/** The Postgres work queue. `dedupeKey` keeps one queued job per PR head or repo; claiming skips a key already running. */
+/**
+ * The Postgres work queue. `dedupeKey` keeps one queued job per PR head or repo;
+ * `concurrencyKey` is the wider scope in which only one job may run at a time.
+ */
 export const job = pgTable(
   "job",
   {
@@ -28,6 +31,7 @@ export const job = pgTable(
       .default(sql`uuidv7()`),
     kind: text().notNull(),
     dedupeKey: text().notNull(),
+    concurrencyKey: text().notNull(),
     payload: jsonb().notNull(),
     status: text({ enum: ["queued", "running", "done", "failed"] })
       .notNull()
@@ -44,6 +48,9 @@ export const job = pgTable(
     uniqueIndex("job_queued_dedupe_idx")
       .on(table.dedupeKey)
       .where(sql`${table.status} = 'queued'`),
+    index("job_running_concurrency_idx")
+      .on(table.concurrencyKey)
+      .where(sql`${table.status} = 'running'`),
   ],
 );
 
@@ -73,6 +80,8 @@ export const review = pgTable(
     outputTokens: integer().notNull().default(0),
     summaryCommentId: bigint({ mode: "number" }),
     createdAt: timestamp({ withTimezone: true }).notNull().defaultNow(),
+    /** Reset on every run, so the stuck-review sweep does not hit a retry of an old row. */
+    startedAt: timestamp({ withTimezone: true }).notNull().defaultNow(),
     finishedAt: timestamp({ withTimezone: true }),
   },
   (table) => [
@@ -96,7 +105,9 @@ export const finding = pgTable(
     startLine: integer(),
     line: integer().notNull(),
     severity: text({ enum: ["critical", "major", "minor"] }).notNull(),
-    category: text().notNull(),
+    category: text({
+      enum: ["logic", "security", "performance", "reliability", "style", "rule"],
+    }).notNull(),
     title: text().notNull(),
     body: text().notNull(),
     suggestion: text(),

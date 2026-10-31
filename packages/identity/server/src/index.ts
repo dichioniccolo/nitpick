@@ -12,56 +12,16 @@ import * as Redacted from "effect/Redacted";
 import { Pool } from "pg";
 import { v7 as uuidv7 } from "uuid";
 
-export interface User {
-  readonly id: string;
-  readonly login: string;
-  readonly avatarUrl: string | null;
-}
+import { accessibleRepositories } from "./GitHubAccess.ts";
+import { type User, userOfSession } from "./Session.ts";
+
+export type { User } from "./Session.ts";
 
 /**
  * Short, with no sliding refresh: repository access is copied from GitHub at
  * sign-in, so a session must not outlive that copy by much.
  */
 const SessionTtl = Duration.hours(8);
-
-/** GitHub caps pages at 100 rows; this bounds one sign-in to 1,000 repositories per installation. */
-const maxPages = 10;
-
-const github = async <A>(token: string, path: string): Promise<A> => {
-  const response = await fetch(`https://api.github.com${path}`, {
-    headers: { authorization: `Bearer ${token}`, accept: "application/vnd.github+json" },
-  });
-
-  if (!response.ok) throw new Error(`GitHub answered ${response.status} for ${path}`);
-
-  // SAFETY: GitHub's REST schema for `path`; a change there fails sign-in, not access checks.
-  return (await response.json()) as A;
-};
-
-/** The ids of the repositories this GitHub user reaches through the App. */
-const accessibleRepositories = async (token: string): Promise<ReadonlyArray<number>> => {
-  const { installations } = await github<{ installations: ReadonlyArray<{ id: number }> }>(
-    token,
-    "/user/installations?per_page=100",
-  );
-
-  const ids: Array<number> = [];
-
-  for (const item of installations) {
-    for (let page = 1; page <= maxPages; page += 1) {
-      const { repositories } = await github<{ repositories: ReadonlyArray<{ id: number }> }>(
-        token,
-        `/user/installations/${item.id}/repositories?per_page=100&page=${page}`,
-      );
-
-      ids.push(...repositories.map((row) => row.id));
-
-      if (repositories.length < 100) break;
-    }
-  }
-
-  return ids;
-};
 
 /** Replace a user's access with `reachable`, limited to repositories this database knows. */
 export const replaceMembership = Effect.fn("identity.membership.replace")(function* (
@@ -187,25 +147,17 @@ export class Identity extends Context.Service<
             body: { accountId: account.id, userId },
           });
 
-          const reachable = await accessibleRepositories(accessToken);
-          await Effect.runPromiseWith(context)(replaceMembership(userId, reachable));
+          await Effect.runPromiseWith(context)(
+            accessibleRepositories(fetch, accessToken).pipe(
+              Effect.flatMap((reachable) => replaceMembership(userId, reachable)),
+            ),
+          );
         },
       );
 
       return {
         handler: auth.handler,
-        userOf: (headers) =>
-          Effect.promise(() => auth.api.getSession({ headers })).pipe(
-            Effect.map((found) =>
-              found === null
-                ? null
-                : {
-                    id: found.user.id,
-                    login: found.user.login,
-                    avatarUrl: found.user.image ?? null,
-                  },
-            ),
-          ),
+        userOf: (headers) => userOfSession(() => auth.api.getSession({ headers })),
       };
     }),
   );

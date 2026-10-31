@@ -1,3 +1,4 @@
+import * as Cause from "effect/Cause";
 import * as Config from "effect/Config";
 import * as Context from "effect/Context";
 import * as Data from "effect/Data";
@@ -59,9 +60,15 @@ export interface InstallationRepository {
   readonly private: boolean;
 }
 
-export interface Reactions {
-  readonly up: number;
-  readonly down: number;
+/** A comment read back from GitHub. `author` is the login, `<slug>[bot]` for an App. */
+export interface AuthoredComment extends PostedComment {
+  readonly author: string;
+}
+
+export interface Reaction {
+  readonly content: string;
+  /** `null` for a deleted account. */
+  readonly user: string | null;
 }
 
 /** Everything the app does on GitHub. A narrow port, so tests swap it for a fake. */
@@ -96,10 +103,22 @@ export interface GitHubApi {
     commentId: number | null,
     body: string,
   ) => Effect.Effect<number, GitHubError>;
+  /** Every inline review comment on the PR, for finding what an interrupted run posted. */
+  readonly listReviewComments: (
+    ref: RepoRef,
+    number: number,
+  ) => Effect.Effect<ReadonlyArray<AuthoredComment>, GitHubError>;
+  /** Every conversation comment on the PR. */
+  readonly listIssueComments: (
+    ref: RepoRef,
+    number: number,
+  ) => Effect.Effect<ReadonlyArray<AuthoredComment>, GitHubError>;
   readonly commentReactions: (
     ref: RepoRef,
     commentId: number,
-  ) => Effect.Effect<Reactions, GitHubError>;
+  ) => Effect.Effect<ReadonlyArray<Reaction>, GitHubError>;
+  /** `admin`, `maintain`, `write`, `triage`, `read` or `none`; `none` for an unknown user. */
+  readonly userPermission: (ref: RepoRef, username: string) => Effect.Effect<string, GitHubError>;
 }
 
 const statusOf = (cause: unknown): number | null =>
@@ -115,6 +134,26 @@ export const toRepoRef = (installationId: number, fullName: string): RepoRef => 
   installationId,
   ...repoOf(fullName),
 });
+
+/**
+ * A cause as its tag, plus operation and status when it has them. Never the
+ * message: Drizzle error text carries query params, which hold repository source.
+ */
+export const describeFailure = (cause: Cause.Cause<unknown>): string => {
+  if (Cause.hasInterruptsOnly(cause)) return "Interrupted";
+  const failure = Cause.squash(cause);
+
+  const field = (key: string): ReadonlyArray<string> => {
+    const value = Predicate.hasProperty(failure, key) ? failure[key] : null;
+
+    return Predicate.isString(value) || Predicate.isNumber(value) ? [`${value}`] : [];
+  };
+
+  const name = failure instanceof Error ? failure.name : "Defect";
+  const [tag = name] = field("_tag");
+
+  return [tag, ...field("operation"), ...field("status")].join(" ");
+};
 
 const call = <A>(operation: string, run: () => Promise<A>) =>
   Effect.tryPromise({
@@ -306,17 +345,67 @@ export class GitHub extends Context.Service<GitHub, GitHubApi>()("@nitpick/githu
 
             return data.id;
           }),
+        listReviewComments: (ref, number) =>
+          call("listReviewComments", async () => {
+            const octokit = await client(ref.installationId);
+
+            const rows = await octokit.paginate(octokit.rest.pulls.listReviewComments, {
+              owner: ref.owner,
+              repo: ref.repo,
+              pull_number: number,
+              per_page: 100,
+            });
+
+            return rows.map((row) => ({
+              id: row.id,
+              body: row.body,
+              author: row.user?.login ?? "",
+            }));
+          }),
+        listIssueComments: (ref, number) =>
+          call("listIssueComments", async () => {
+            const octokit = await client(ref.installationId);
+
+            const rows = await octokit.paginate(octokit.rest.issues.listComments, {
+              owner: ref.owner,
+              repo: ref.repo,
+              issue_number: number,
+              per_page: 100,
+            });
+
+            return rows.map((row) => ({
+              id: row.id,
+              body: row.body ?? "",
+              author: row.user?.login ?? "",
+            }));
+          }),
         commentReactions: (ref, commentId) =>
           call("commentReactions", async () => {
             const octokit = await client(ref.installationId);
 
-            const { data } = await octokit.rest.pulls.getReviewComment({
-              owner: ref.owner,
-              repo: ref.repo,
-              comment_id: commentId,
-            });
+            const rows = await octokit.paginate(
+              octokit.rest.reactions.listForPullRequestReviewComment,
+              { owner: ref.owner, repo: ref.repo, comment_id: commentId, per_page: 100 },
+            );
 
-            return { up: data.reactions?.["+1"] ?? 0, down: data.reactions?.["-1"] ?? 0 };
+            return rows.map((row) => ({ content: row.content, user: row.user?.login ?? null }));
+          }),
+        userPermission: (ref, username) =>
+          call("userPermission", async () => {
+            const octokit = await client(ref.installationId);
+
+            try {
+              const { data } = await octokit.rest.repos.getCollaboratorPermissionLevel({
+                owner: ref.owner,
+                repo: ref.repo,
+                username,
+              });
+
+              return data.permission;
+            } catch (cause) {
+              if (statusOf(cause) === 404) return "none";
+              throw cause;
+            }
           }),
       };
 

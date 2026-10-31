@@ -4,8 +4,10 @@ import { expect, type Page, test } from "@playwright/test";
 /**
  * Under `instant()` the server and router hold every dynamic read, so a route
  * passes only when its static shell commits by itself. Markers sit on shell
- * nodes, never on data. A soft navigation also asserts the URL inside the
- * lock: it changes only when the router commits. See instant-nav.rig.md.
+ * nodes, never on data, and each dashboard test also asserts a data slot is
+ * empty under the lock and filled after it. A soft navigation also asserts the
+ * URL inside the lock: it changes only when the router commits. See
+ * instant-nav.rig.md.
  */
 const repoName = "acme/billing";
 const reviewId = "01960000-0000-7000-8000-000000000001";
@@ -14,6 +16,11 @@ const shell = (page: Page, testId: string) => page.getByTestId(testId).filter({ 
 
 /** Under the lock the router commits only a prefetched shell, so prefetches must finish first. */
 const settle = (page: Page) => page.waitForLoadState("networkidle");
+
+const repoHeading = (page: Page) => page.getByRole("heading", { name: repoName });
+const reviewHeading = (page: Page) => page.getByRole("heading", { name: "Store amounts in euros" });
+const repoRow = (page: Page) => page.getByRole("link", { name: new RegExp(`^${repoName} Ready$`) });
+const reviewRow = (page: Page) => page.getByRole("link", { name: /Store amounts in euros/ });
 
 test("the build exposes the testing API, so no test passes vacuously", async ({ request }) => {
   const plain = await (await request.get("/")).text();
@@ -44,20 +51,26 @@ test("/app sends a visitor without a session to the landing page", async ({ page
 test.describe("dashboard", () => {
   test.use({ storageState: "e2e/.auth/demo.json" });
 
-  for (const { path, marker } of [
-    { path: "/app", marker: "repositories-shell" },
-    { path: `/app/repos/${repoName}`, marker: "repository-shell" },
-    { path: `/app/reviews/${reviewId}`, marker: "review-shell" },
+  for (const { path, marker, data } of [
+    { path: "/app", marker: "repositories-shell", data: repoRow },
+    { path: `/app/repos/${repoName}`, marker: "repository-shell", data: repoHeading },
+    { path: `/app/reviews/${reviewId}`, marker: "review-shell", data: reviewHeading },
   ]) {
-    test(`${path} commits its shell under instant()`, async ({ page, baseURL }) => {
+    test(`${path} commits its shell under instant() and holds its data`, async ({
+      page,
+      baseURL,
+    }) => {
       await instant(
         page,
         async () => {
           await page.goto(path);
           await expect(shell(page, marker)).toBeVisible();
+          await expect(data(page)).toHaveCount(0);
         },
         { baseURL },
       );
+
+      await expect(data(page)).toBeVisible();
     });
   }
 
@@ -65,27 +78,39 @@ test.describe("dashboard", () => {
     page,
   }) => {
     await page.goto("/app");
-    const link = page.getByRole("link", { name: new RegExp(`^${repoName} Ready$`) });
+    const link = repoRow(page);
     await expect(link).toBeVisible();
     await settle(page);
     await instant(page, async () => {
       await link.click();
       await expect(page).toHaveURL(new RegExp(`/app/repos/${repoName}$`));
       await expect(shell(page, "repository-shell")).toBeVisible();
+      await expect(repoHeading(page)).toHaveCount(0);
     });
-    await expect(page.getByRole("heading", { name: repoName })).toBeVisible();
+    await expect(repoHeading(page)).toBeVisible();
   });
 
   test("repositories -> review is a soft navigation with an instant shell", async ({ page }) => {
     await page.goto("/app");
-    const link = page.getByRole("link", { name: /Store amounts in euros/ });
+    const link = reviewRow(page);
     await expect(link).toBeVisible();
     await settle(page);
     await instant(page, async () => {
       await link.click();
       await expect(page).toHaveURL(new RegExp(`/app/reviews/${reviewId}$`));
       await expect(shell(page, "review-shell")).toBeVisible();
+      await expect(reviewHeading(page)).toHaveCount(0);
     });
-    await expect(page.getByRole("heading", { name: "Store amounts in euros" })).toBeVisible();
+    await expect(reviewHeading(page)).toBeVisible();
   });
+
+  // notFound() fires after the shell flushed with 200. See "Walls" in instant-nav.rig.md.
+  for (const path of ["/app/repos/x/y", "/app/reviews/abc"]) {
+    test(`${path} answers 200 with the not-found page`, async ({ page }) => {
+      const response = await page.goto(path);
+
+      expect(response?.status()).toBe(200);
+      await expect(page.getByRole("heading", { name: "Nothing here" })).toBeVisible();
+    });
+  }
 });

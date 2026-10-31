@@ -9,6 +9,7 @@ import {
 import type { Json } from "@nitpick/review-domain";
 import * as Data from "effect/Data";
 import * as Effect from "effect/Effect";
+import * as Predicate from "effect/Predicate";
 import * as Result from "effect/Result";
 import * as S from "effect/Schema";
 
@@ -48,13 +49,26 @@ export const objectSchema = (
   additionalProperties: false,
 });
 
+/** Postgres text cannot hold NUL, and a query carrying one fails as a defect, not a tool error. */
+const stripNul = (input: Json): Json => {
+  if (Predicate.isString(input)) return input.replaceAll("\u0000", "");
+
+  if (Array.isArray(input)) return input.map(stripNul);
+
+  return Predicate.isObject(input)
+    ? Object.fromEntries(Object.entries(input).map(([key, value]) => [key, stripNul(value)]))
+    : input;
+};
+
 /** Tool inputs stream as generated, so they are unchecked until decoded here. */
 export const decoder = <A, I>(schema: S.Codec<A, I>) => {
   // SAFETY: these schemas are plain structs, which need no decoding services.
   const decode = S.decodeUnknownEffect(schema as S.Codec<A, unknown>);
 
   return (input: Json): Effect.Effect<A, Error> =>
-    decode(input).pipe(Effect.mapError((issue) => new Error(`Invalid input: ${String(issue)}`)));
+    decode(stripNul(input)).pipe(
+      Effect.mapError((issue) => new Error(`Invalid input: ${String(issue)}`)),
+    );
 };
 
 const inputOf = (call: { readonly input: unknown }): Json =>

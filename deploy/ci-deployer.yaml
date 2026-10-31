@@ -26,35 +26,23 @@ metadata:
   name: github-deployer
   namespace: nitpick
 rules:
-  # Helm keeps release state in Secrets in the release namespace. The smoke
-  # test runs a pod.
+  # Helm keeps release state in Secrets in the release namespace.
   - apiGroups: [""]
-    resources: [secrets, configmaps, services, serviceaccounts, pods]
+    resources: [secrets, configmaps, services, serviceaccounts]
     verbs: [get, list, watch, create, update, patch, delete]
-  # Reading pod logs is what makes a failed migration hook debuggable from CI.
+  # Read-only: reading pod logs is what makes a failed migration hook debuggable from CI.
   - apiGroups: [""]
-    resources: [pods/log]
-    verbs: [get, list]
+    resources: [pods, pods/log]
+    verbs: [get, list, watch]
   - apiGroups: [apps]
     resources: [deployments, replicasets]
     verbs: [get, list, watch, create, update, patch, delete]
-  # The migration hook, and the data import when it is on.
+  # The migration hook.
   - apiGroups: [batch]
     resources: [jobs]
     verbs: [get, list, watch, create, update, patch, delete]
   - apiGroups: [networking.k8s.io]
     resources: [ingresses]
-    verbs: [get, list, watch, create, update, patch, delete]
-  - apiGroups: [policy]
-    resources: [poddisruptionbudgets]
-    verbs: [get, list, watch, create, update, patch, delete]
-  - apiGroups: [autoscaling]
-    resources: [horizontalpodautoscalers]
-    verbs: [get, list, watch, create, update, patch, delete]
-  # The ServiceMonitor that points Prometheus at this release. Namespaced, so
-  # it grants nothing in `monitoring`.
-  - apiGroups: [monitoring.coreos.com]
-    resources: [servicemonitors]
     verbs: [get, list, watch, create, update, patch, delete]
 ---
 apiVersion: rbac.authorization.k8s.io/v1

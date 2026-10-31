@@ -49,25 +49,90 @@ export const annotatePatch = (patch: string): string => {
   return output.join("\n");
 };
 
-const regexChars = /[.+^${}()|[\]\\]/g;
+const anySegment = "*";
+const anyPath = "**";
+const anyChar = "?";
 
-/** Compile a gitignore-style glob: `*`, `**`, `?`, and a bare name matches at any depth. */
-export const globToRegExp = (glob: string): RegExp => {
-  const anchored = glob.includes("/");
+/**
+ * Tokens of a gitignore-style glob: a star, a double star, `?`, otherwise one
+ * literal character. A double star takes a following slash with it. A bare name
+ * matches at any depth: a double star plus `/`, against the path behind a `/`.
+ */
+const globTokens = (glob: string): ReadonlyArray<string> => {
+  const body = glob.startsWith("/") ? glob.slice(1) : glob;
+  const tokens: Array<string> = glob.includes("/") ? [] : [anyPath, "/"];
+  let index = 0;
 
-  const body = glob
-    .replace(/^\//, "")
-    .replace(regexChars, "\\$&")
-    .replace(/\*\*\/?|\*|\?/g, (token) => {
-      if (token === "*") return "[^/]*";
+  while (index < body.length) {
+    if (body.startsWith(anyPath, index)) {
+      tokens.push(anyPath);
+      index += body.charAt(index + 2) === "/" ? 3 : 2;
+    } else {
+      tokens.push(body.charAt(index));
+      index += 1;
+    }
+  }
 
-      if (token === "?") return "[^/]";
+  return tokens;
+};
 
-      return ".*";
-    });
+/**
+ * Walk `tokens` over `text` tracking every token position reachable so far, so
+ * the cost is at most characters times tokens whatever the glob. A match may
+ * end before a `/`, which covers everything under a matched directory.
+ */
+const matchesTokens = (tokens: ReadonlyArray<string>, text: string): boolean => {
+  const size = tokens.length;
+  let active = Array.from({ length: size + 1 }, () => false);
+  let next = Array.from({ length: size + 1 }, () => false);
 
-  return new RegExp(`^${anchored ? "" : "(?:.*/)?"}${body}(?:/.*)?$`);
+  // A star may match nothing, so reaching one reaches the token after it too.
+  const reach = (states: Array<boolean>, from: number): void => {
+    let position = from;
+    states[position] = true;
+
+    while (tokens[position] === anySegment || tokens[position] === anyPath) {
+      position += 1;
+      states[position] = true;
+    }
+  };
+
+  reach(active, 0);
+
+  for (let index = 0; index <= text.length; index += 1) {
+    const char = text.charAt(index);
+
+    if (active[size] === true && (index === text.length || char === "/")) return true;
+
+    if (index === text.length) return false;
+    next.fill(false);
+    let alive = false;
+
+    for (let position = 0; position < size; position += 1) {
+      if (active[position] !== true) continue;
+      const token = tokens[position];
+      const inSegment = char !== "/";
+
+      if (token === anyPath || (token === anySegment && inSegment)) {
+        reach(next, position);
+        alive = true;
+      } else if ((token === anyChar && inSegment) || token === char) {
+        reach(next, position + 1);
+        alive = true;
+      }
+    }
+
+    if (!alive) return false;
+    [active, next] = [next, active];
+  }
+
+  return false;
 };
 
 export const isIgnored = (path: string, globs: ReadonlyArray<string>): boolean =>
-  globs.some((glob) => globToRegExp(glob).test(path));
+  globs.some((raw) => {
+    // A trailing slash only says "directory"; everything under it already matches.
+    const glob = raw.replace(/\/$/, "");
+
+    return matchesTokens(globTokens(glob), glob.includes("/") ? path : `/${path}`);
+  });

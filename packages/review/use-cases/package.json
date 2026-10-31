@@ -10,8 +10,7 @@
     "check": "tsc --noEmit -p tsconfig.json"
   },
   "dependencies": {
-    "@nitpick/review-domain": "workspace:*",
-    "effect": "catalog:"
+    "@nitpick/review-domain": "workspace:*"
   },
   "devDependencies": {
     "@effect/vitest": "catalog:",
