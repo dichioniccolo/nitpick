@@ -1,0 +1,13 @@
+{
+  "$schema": "./node_modules/oxfmt/configuration_schema.json",
+  "printWidth": 100,
+  "ignorePatterns": [
+    "migrations/**",
+    "charts/**",
+    "patches/**",
+    "bun.lock",
+    "tools/oxlint/anti-slop/**",
+    "**/.next/**",
+    "instant-nav.rig.md"
+  ]
+}

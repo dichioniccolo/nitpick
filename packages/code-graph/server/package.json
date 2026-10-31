@@ -1,0 +1,28 @@
+{
+  "name": "@nitpick/code-graph-server",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "exports": {
+    ".": "./src/index.ts"
+  },
+  "scripts": {
+    "check": "tsc --noEmit -p tsconfig.json"
+  },
+  "dependencies": {
+    "@nitpick/code-graph-domain": "workspace:*",
+    "@nitpick/code-graph-tables": "workspace:*",
+    "@nitpick/github": "workspace:*",
+    "@nitpick/postgres": "workspace:*",
+    "@nitpick/tree-sitter": "workspace:*",
+    "drizzle-orm": "catalog:",
+    "effect": "catalog:",
+    "nanotar": "catalog:"
+  },
+  "devDependencies": {
+    "@effect/vitest": "catalog:",
+    "@types/node": "catalog:",
+    "typescript": "catalog:",
+    "vitest": "catalog:"
+  }
+}

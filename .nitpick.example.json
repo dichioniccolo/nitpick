@@ -1,0 +1,10 @@
+{
+  "strictness": "balanced",
+  "triggerOnUpdates": false,
+  "skipDrafts": true,
+  "ignorePaths": ["*.generated.ts", "docs/**"],
+  "skipLabels": ["no-review"],
+  "rules": ["Database calls go through a repository class"],
+  "maxFindings": 15,
+  "diagram": true
+}

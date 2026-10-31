@@ -1,0 +1,40 @@
+{
+  "compilerOptions": {
+    "lib": ["ESNext"],
+    "target": "ES2024",
+    "module": "esnext",
+    "moduleResolution": "bundler",
+    "moduleDetection": "force",
+    "verbatimModuleSyntax": true,
+    "allowImportingTsExtensions": true,
+    "erasableSyntaxOnly": true,
+    "noEmit": true,
+    "strict": true,
+    "exactOptionalPropertyTypes": true,
+    "noUnusedLocals": true,
+    "noUnusedParameters": true,
+    "noImplicitOverride": true,
+    "noImplicitReturns": true,
+    "allowUnreachableCode": false,
+    "allowUnusedLabels": false,
+    "noUncheckedIndexedAccess": true,
+    "noFallthroughCasesInSwitch": true,
+    "skipLibCheck": true,
+    "noErrorTruncation": true,
+    "types": ["node"],
+    "jsx": "preserve",
+    "plugins": [
+      {
+        "name": "@effect/language-service",
+        "namespaceImportPackages": ["effect", "@effect/*", "@nitpick/*"],
+        "importAliases": {
+          "Array": "A",
+          "Option": "O",
+          "Predicate": "P",
+          "Record": "R",
+          "Schema": "S"
+        }
+      }
+    ]
+  }
+}

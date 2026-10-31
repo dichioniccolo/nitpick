@@ -1,0 +1,73 @@
+@import "tailwindcss";
+
+@theme {
+  --color-paper: #e8ecf4;
+  --color-sheet: #f6f8fc;
+  --color-ink: #16244a;
+  --color-soft: #52608a;
+  --color-rule: #c3cbdf;
+  --color-marker: #f7df4b;
+  --color-add: #1c7a5a;
+  --color-del: #b0344c;
+  --font-sans: var(--font-familjen), system-ui, sans-serif;
+  --font-mono: var(--font-plex-mono), ui-monospace, monospace;
+}
+
+@media (prefers-color-scheme: dark) {
+  :root {
+    --color-paper: #101a36;
+    --color-sheet: #16224a;
+    --color-ink: #e6ebf7;
+    --color-soft: #a2aecd;
+    --color-rule: #2c3a66;
+    --color-add: #5cc9a3;
+    --color-del: #f08aa0;
+  }
+}
+
+body {
+  background: var(--color-paper);
+  color: var(--color-ink);
+  font-family: var(--font-sans);
+  line-height: 1.55;
+}
+
+:focus-visible {
+  outline: 2px solid var(--color-ink);
+  outline-offset: 2px;
+}
+
+/* The one moment on the page: the highlighter sweeps the buggy line, then the comment lands under it. */
+.sweep {
+  background: linear-gradient(var(--color-marker), var(--color-marker)) no-repeat left / 0 100%;
+  color: #16244a;
+  animation: sweep 700ms 500ms cubic-bezier(0.3, 0.7, 0.2, 1) forwards;
+}
+
+.lands {
+  opacity: 0;
+  animation: lands 300ms 1200ms ease-out forwards;
+}
+
+@keyframes sweep {
+  to {
+    background-size: 100% 100%;
+  }
+}
+
+@keyframes lands {
+  to {
+    opacity: 1;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .sweep {
+    animation: none;
+    background-size: 100% 100%;
+  }
+  .lands {
+    animation: none;
+    opacity: 1;
+  }
+}

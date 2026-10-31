@@ -1,0 +1,72 @@
+# The identity CI deploys as, scoped to the `nitpick` namespace. The KUBECONFIG
+# repository secret holds its token.
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: nitpick
+---
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: github-deployer
+  namespace: nitpick
+---
+apiVersion: v1
+kind: Secret
+metadata:
+  name: github-deployer-token
+  namespace: nitpick
+  annotations:
+    kubernetes.io/service-account.name: github-deployer
+type: kubernetes.io/service-account-token
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: github-deployer
+  namespace: nitpick
+rules:
+  # Helm keeps release state in Secrets in the release namespace. The smoke
+  # test runs a pod.
+  - apiGroups: [""]
+    resources: [secrets, configmaps, services, serviceaccounts, pods]
+    verbs: [get, list, watch, create, update, patch, delete]
+  # Reading pod logs is what makes a failed migration hook debuggable from CI.
+  - apiGroups: [""]
+    resources: [pods/log]
+    verbs: [get, list]
+  - apiGroups: [apps]
+    resources: [deployments, replicasets]
+    verbs: [get, list, watch, create, update, patch, delete]
+  # The migration hook, and the data import when it is on.
+  - apiGroups: [batch]
+    resources: [jobs]
+    verbs: [get, list, watch, create, update, patch, delete]
+  - apiGroups: [networking.k8s.io]
+    resources: [ingresses]
+    verbs: [get, list, watch, create, update, patch, delete]
+  - apiGroups: [policy]
+    resources: [poddisruptionbudgets]
+    verbs: [get, list, watch, create, update, patch, delete]
+  - apiGroups: [autoscaling]
+    resources: [horizontalpodautoscalers]
+    verbs: [get, list, watch, create, update, patch, delete]
+  # The ServiceMonitor that points Prometheus at this release. Namespaced, so
+  # it grants nothing in `monitoring`.
+  - apiGroups: [monitoring.coreos.com]
+    resources: [servicemonitors]
+    verbs: [get, list, watch, create, update, patch, delete]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: github-deployer
+  namespace: nitpick
+subjects:
+  - kind: ServiceAccount
+    name: github-deployer
+    namespace: nitpick
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: github-deployer

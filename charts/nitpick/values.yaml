@@ -1,0 +1,71 @@
+image:
+  repository: ghcr.io/dichioniccolo/nitpick
+  tag: ""
+  pullPolicy: IfNotPresent
+
+# The GHCR package is private. Copy the account's pull secret from `site`, as
+# the lms chart does:
+#
+#   kubectl -n site get secret site-ghcr -o json |
+#     jq '{apiVersion, kind, type, data, metadata: {name: "nitpick-ghcr", namespace: "nitpick"}}' |
+#     kubectl apply -f -
+imagePullSecrets:
+  - name: nitpick-ghcr
+
+# REQUIRED Secret, loaded whole into the pods:
+#
+#   DATABASE_URL            see deploy/README.md for the CloudNativePG form
+#   AUTH_SECRET             better-auth signing key, `openssl rand -base64 32`
+#   ANTHROPIC_API_KEY
+#   GITHUB_APP_ID, GITHUB_APP_PRIVATE_KEY, GITHUB_WEBHOOK_SECRET
+#   GITHUB_CLIENT_ID, GITHUB_CLIENT_SECRET
+secretName: nitpick-app
+
+env:
+  APP_URL: https://nitpick.niccolodichio.it
+  GITHUB_APP_SLUG: nitpick-review
+  ANTHROPIC_MODEL: claude-opus-5-5
+  WORKER_CONCURRENCY: "2"
+
+web:
+  replicas: 2
+  port: 3000
+  resources:
+    requests: { cpu: 50m, memory: 192Mi }
+    limits: { memory: 512Mi }
+
+worker:
+  # One is enough: the queue is in Postgres, so more can be added without changes.
+  replicas: 1
+  resources:
+    requests: { cpu: 100m, memory: 256Mi }
+    # A repository tarball is read into memory, up to 150 MB on GitHub's measure.
+    limits: { memory: 1536Mi }
+
+migrations:
+  backoffLimit: 1
+  activeDeadlineSeconds: 300
+  resources:
+    requests: { cpu: 50m, memory: 128Mi }
+    limits: { memory: 256Mi }
+
+ingress:
+  className: traefik
+  host: nitpick.niccolodichio.it
+  annotations:
+    cert-manager.io/cluster-issuer: letsencrypt-prod
+  tlsSecretName: nitpick-tls
+
+podSecurityContext:
+  runAsNonRoot: true
+  runAsUser: 1001
+  runAsGroup: 1001
+  fsGroup: 1001
+  seccompProfile:
+    type: RuntimeDefault
+
+securityContext:
+  allowPrivilegeEscalation: false
+  readOnlyRootFilesystem: true
+  capabilities:
+    drop: ["ALL"]

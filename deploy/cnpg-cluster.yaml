@@ -1,0 +1,37 @@
+# PostgreSQL for Nitpick. Its own Cluster, same rules as the others in
+# ~/dev/k8s/cnpg: one instance on local-path, no superuser login, only the owner
+# may connect. 18 is required: the schema's ids default to uuidv7().
+apiVersion: postgresql.cnpg.io/v1
+kind: Cluster
+metadata:
+  name: nitpick
+  namespace: databases
+spec:
+  instances: 1
+  imageName: ghcr.io/cloudnative-pg/postgresql:18.4-system-trixie
+  # It holds a searchable copy of each indexed repository's source.
+  storage:
+    size: 10Gi
+    storageClass: local-path
+  enableSuperuserAccess: false
+  bootstrap:
+    initdb:
+      database: nitpick
+      owner: nitpick
+      postInitApplicationSQL:
+        - REVOKE CONNECT ON DATABASE nitpick FROM PUBLIC;
+        - REVOKE ALL ON SCHEMA public FROM PUBLIC;
+        - GRANT ALL ON SCHEMA public TO nitpick;
+  postgresql:
+    pg_hba:
+      - host nitpick nitpick all scram-sha-256
+      - host nitpick all all reject
+    parameters:
+      max_wal_size: 256MB
+      min_wal_size: 80MB
+  resources:
+    requests:
+      cpu: 100m
+      memory: 256Mi
+    limits:
+      memory: 768Mi

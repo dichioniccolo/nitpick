@@ -1,0 +1,32 @@
+{
+  "name": "@nitpick/web",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "build": "next build",
+    "check": "next typegen && tsc --noEmit -p tsconfig.json",
+    "dev": "next dev",
+    "start": "next start"
+  },
+  "dependencies": {
+    "@nitpick/code-graph-tables": "workspace:*",
+    "@nitpick/identity-server": "workspace:*",
+    "@nitpick/postgres": "workspace:*",
+    "@nitpick/review-server": "workspace:*",
+    "better-auth": "catalog:",
+    "effect": "catalog:",
+    "next": "catalog:",
+    "react": "catalog:",
+    "react-dom": "catalog:",
+    "server-only": "^0.0.1"
+  },
+  "devDependencies": {
+    "@tailwindcss/postcss": "catalog:",
+    "@types/node": "catalog:",
+    "@types/react": "catalog:",
+    "@types/react-dom": "catalog:",
+    "tailwindcss": "catalog:",
+    "typescript": "catalog:"
+  }
+}

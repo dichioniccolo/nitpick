@@ -1,0 +1,9 @@
+node_modules
+**/node_modules
+**/.next
+**/dist
+.git
+.turbo
+e2e/.auth
+test-results
+.env*

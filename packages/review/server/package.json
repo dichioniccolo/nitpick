@@ -1,0 +1,37 @@
+{
+  "name": "@nitpick/review-server",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "exports": {
+    "./web": "./src/web.ts",
+    "./worker": "./src/worker.ts"
+  },
+  "scripts": {
+    "check": "tsc --noEmit -p tsconfig.json"
+  },
+  "dependencies": {
+    "@anthropic-ai/sdk": "catalog:",
+    "@nitpick/anthropic": "workspace:*",
+    "@nitpick/code-graph-domain": "workspace:*",
+    "@nitpick/code-graph-server": "workspace:*",
+    "@nitpick/code-graph-tables": "workspace:*",
+    "@nitpick/github": "workspace:*",
+    "@nitpick/identity-tables": "workspace:*",
+    "@nitpick/postgres": "workspace:*",
+    "@nitpick/review-domain": "workspace:*",
+    "@nitpick/review-tables": "workspace:*",
+    "@nitpick/review-use-cases": "workspace:*",
+    "drizzle-orm": "catalog:",
+    "effect": "catalog:"
+  },
+  "devDependencies": {
+    "@effect/vitest": "catalog:",
+    "@nitpick/identity-server": "workspace:*",
+    "@nitpick/tree-sitter": "workspace:*",
+    "@types/node": "catalog:",
+    "nanotar": "catalog:",
+    "typescript": "catalog:",
+    "vitest": "catalog:"
+  }
+}
