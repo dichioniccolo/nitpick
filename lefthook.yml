@@ -3,7 +3,7 @@ pre-commit:
   commands:
     oxfmt:
       glob: "*.{ts,tsx,js,jsx,json,jsonc,css,md,yml,yaml}"
-      run: bunx oxfmt {staged_files}
+      run: bunx oxfmt --no-error-on-unmatched-pattern {staged_files}
       stage_fixed: true
     oxlint:
       glob: "*.{ts,tsx,js,jsx}"

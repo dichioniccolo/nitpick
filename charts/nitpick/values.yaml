@@ -23,7 +23,7 @@ secretName: nitpick-app
 
 env:
   APP_URL: https://nitpick.niccolodichio.it
-  GITHUB_APP_SLUG: nitpick-review
+  GITHUB_APP_SLUG: nitpick-app
   ANTHROPIC_MODEL: claude-opus-5-5
   WORKER_CONCURRENCY: "2"
 

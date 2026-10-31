@@ -14,3 +14,6 @@ graphify-out/
 e2e/.auth/
 test-results/
 playwright-report/
+
+# Private keys never belong here.
+*.pem
