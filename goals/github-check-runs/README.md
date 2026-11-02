@@ -29,7 +29,7 @@ follow the instructions in goals/github-check-runs/GOAL.md
 
 ## Current phase
 
-P2 Verify. Implementation landed; next: the quality-review-fix-loop, then open the PR.
+P3 PR. Quality loop closed after two rounds with zero required findings; next: drive the PR to merge.
 
 ## Latest evidence
 
@@ -47,5 +47,7 @@ Backlog from review round 1 (non-blocking):
   queues nothing.
 - `review.checkRunId` has no index; Re-run lookups scan one repository's reviews.
 - The sweep does not retry a failed check update.
+- A create that times out after GitHub made the run leaves it `in_progress` with no stored id; Re-run
+  recovers it.
 - Subscribing to Check run delivers every Actions run's `created` and `completed`; each lands in
   `webhook_delivery`. Watch the volume.

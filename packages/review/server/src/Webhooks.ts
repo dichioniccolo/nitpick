@@ -195,7 +195,7 @@ const jobsFor = Effect.fnUntraced(function* (event: string, payload: Json) {
           .limit(1);
 
         // nitpick writes the PR number as `external_id`; anyone's digits there only pick a PR in this repo.
-        const fromExternal = /^[1-9][0-9]{0,9}$/.test(run.external_id ?? "")
+        const fromExternal = /^[1-9][0-9]{0,8}$/.test(run.external_id ?? "")
           ? Number(run.external_id)
           : undefined;
 

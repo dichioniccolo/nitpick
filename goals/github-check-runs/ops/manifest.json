@@ -54,12 +54,12 @@
     {
       "id": "P2",
       "name": "Verify",
-      "status": "in_progress"
+      "status": "completed"
     },
     {
       "id": "P3",
       "name": "PR to merge",
-      "status": "pending"
+      "status": "in_progress"
     },
     {
       "id": "P4",

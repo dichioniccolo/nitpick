@@ -1206,6 +1206,15 @@ describe("check runs", () => {
         const back = creates().at(-1);
         assert.strictEqual(back?.headSha, "head1");
         assert.strictEqual(back?.run.conclusion, "failure");
+
+        // head2 passes on request; going back to head1 still shows head1's own failure.
+        state.head = "head2";
+        state.severity = "major";
+        yield* reviewPullRequest({ ...opened(57, "head2"), trigger: "requested" });
+        assert.strictEqual(creates().at(-1)?.run.status, "in_progress");
+        state.head = "head1";
+        yield* reviewPullRequest({ ...opened(57, "head1"), trigger: "pushed" });
+        assert.strictEqual(creates().at(-1)?.run.conclusion, "failure");
         state.head = "head2";
 
         yield* reviewPullRequest({ ...opened(58, "head2"), trigger: "pushed" });

@@ -228,7 +228,8 @@ const postUnreviewed = Effect.fnUntraced(function* (
         isNotNull(review.finishedAt),
       ),
     )
-    .orderBy(desc(review.finishedAt))
+    // This head's own result first, so a newer head's pass never overrides a failure judged here.
+    .orderBy(sql`${review.headSha} = ${pull.headSha} desc`, desc(review.finishedAt))
     .limit(1)
     .pipe(Effect.orDie);
 
