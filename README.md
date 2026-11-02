@@ -13,8 +13,9 @@ It reproduces the behavior of hosted reviewers such as Greptile. It shares no co
   stranger cannot spend your API budget.
 - Learns from thumbs up and down on its comments, counting only users with write access, and from
   team rules in the dashboard.
-- Posts a `nitpick` check on each head: `failure` when a finding reaches `checks.failOn` (default
-  `critical`), `neutral` when the review itself fails, `skipped` when a skip rule applies (draft, label,
+- Posts a `nitpick` check on each head: `failure` when the confidence score is below
+  `checks.minConfidence` (default 5; 1 when `failOn` is `never`) or a finding reaches `checks.failOn`
+  (default `critical`), `neutral` when the review itself fails, `skipped` when a skip rule applies (draft, label,
   author, base branch), and the last result again on a push it does not review. Re-run on the check
   reviews that head; `checks.enabled: false` turns it off. Require it in branch protection to gate merges.
 - Writes one summary comment per PR in Greptile's layout: confidence score, an impact-tagged verdict,

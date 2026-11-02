@@ -60,7 +60,10 @@ export const Strictness = S.Literals(["strict", "balanced", "relaxed"]);
 
 export type Strictness = typeof Strictness.Type;
 
-/** The lowest severity that fails the check; `never` makes the check report only. */
+/**
+ * The lowest severity that fails the check. `never` makes the check report only: unless the file
+ * also sets `minConfidence`, the confidence rule is off too.
+ */
 export const FailOn = S.Literals(["critical", "major", "minor", "never"]);
 
 export type FailOn = typeof FailOn.Type;
@@ -74,6 +77,8 @@ export type CheckConclusion = typeof CheckConclusion.Type;
 export const ChecksConfig = S.Struct({
   enabled: S.optionalKey(S.Boolean),
   failOn: S.optionalKey(FailOn),
+  /** The check fails below this confidence score; 1 turns the rule off. */
+  minConfidence: S.optionalKey(S.Int.check(S.isBetween({ minimum: 1, maximum: 5 }))),
 });
 
 export type ChecksConfig = typeof ChecksConfig.Type;
@@ -116,14 +121,19 @@ export const ResolvedConfig: ResolvedConfig = {
   rules: [],
   maxFindings: 15,
   diagram: true,
-  checks: { enabled: true, failOn: "critical" },
+  checks: { enabled: true, failOn: "critical", minConfidence: 5 },
 };
 
 /** Defaults under the file's values. `checks` merges by key, so `{ "failOn": "major" }` keeps it enabled. */
 export const resolveConfig = (config: RepoConfig): ResolvedConfig => ({
   ...ResolvedConfig,
   ...config,
-  checks: { ...ResolvedConfig.checks, ...config.checks },
+  checks: {
+    ...ResolvedConfig.checks,
+    // A repo that chose "never fail" keeps a report-only check when the confidence rule arrived.
+    ...(config.checks?.failOn === "never" ? { minConfidence: 1 } : undefined),
+    ...config.checks,
+  },
 });
 
 /** Queue payloads. `kind` also names the job row. */

@@ -696,7 +696,7 @@ export const reviewPullRequest = Effect.fn("review.pull.run")(function* (payload
       }),
     );
 
-    const conclusion = checkConclusion(stored, config.checks.failOn);
+    const conclusion = checkConclusion(stored, saved?.confidence ?? 1, config.checks);
 
     // Before the row turns `completed`: a crash in between leaves `running`, and the retry reuses this run.
     yield* finishCheckRun({
@@ -706,7 +706,7 @@ export const reviewPullRequest = Effect.fn("review.pull.run")(function* (payload
         summary: saved?.summary ?? "",
         confidence: saved?.confidence ?? 1,
         findings: stored,
-        failOn: config.checks.failOn,
+        gate: config.checks,
         reviewUrl,
       }),
     });

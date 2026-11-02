@@ -65,6 +65,7 @@ interface State {
   branch: string;
   tree: ReadonlyArray<{ readonly name: string; readonly data: string }>;
   severity: "critical" | "major" | "minor";
+  confidence: number;
   checkWrites: Array<CheckWrite>;
   /** Fail every check write with this status, as an install without the Checks permission does. */
   failChecks: number | null;
@@ -113,6 +114,7 @@ const initial = (): State => ({
   branch: "base1",
   tree: [billing, { name: "acme-api-base1/node_modules/x/index.js", data: "function hidden() {}" }],
   severity: "major",
+  confidence: 5,
   checkWrites: [],
   failChecks: null,
   failCheckUpdates: null,
@@ -286,7 +288,7 @@ const fakeClaude = {
                 verdict: "Merge after fixing the missing import.",
                 summary: "Adds audit. cc @octocat",
                 changes: ["Calls audit on every charge"],
-                confidence: 3,
+                confidence: state.confidence,
                 findings: [
                   {
                     path: "src/billing.ts",
@@ -402,7 +404,7 @@ describe("review flow", () => {
 
         const [row] = yield* db.select().from(review);
         assert.strictEqual(row?.status, "completed");
-        assert.strictEqual(row?.confidence, 3);
+        assert.strictEqual(row?.confidence, 5);
         assert.strictEqual(row?.inputTokens, 39);
         assert.match(row?.id ?? "", /^[0-9a-f]{8}-[0-9a-f]{4}-7/);
         assert.lengthOf(state.comments, 1);
@@ -1109,7 +1111,7 @@ describe("check runs", () => {
         assert.strictEqual(latest(700)?.detailsUrl, `https://nitpick.test/app/reviews/${row?.id}`);
         assert.strictEqual(opening?.run.externalId, "50");
         const comment = state.summaries.at(-1) ?? "";
-        assert.include(comment, "## Confidence Score: 3/5");
+        assert.include(comment, "## Confidence Score: 5/5");
         assert.include(comment, "**[Medium impact]** Merge after fixing the missing import.");
         assert.include(comment, "- Calls audit on every charge");
         assert.include(comment, `https://nitpick.test/app/reviews/${row?.id}/retrigger`);
@@ -1132,10 +1134,24 @@ describe("check runs", () => {
         yield* reviewPullRequest(opened(52));
         assert.strictEqual(latest(701)?.conclusion, "failure");
 
+        // Report-only stays report-only, even under the default minConfidence.
         state.severity = "critical";
+        state.confidence = 2;
         state.config = '{"checks":{"failOn":"never"}}';
         yield* reviewPullRequest(opened(53));
         assert.strictEqual(latest(702)?.conclusion, "success");
+
+        // Below the default minConfidence of 5 the check fails with no blocking finding.
+        state.severity = "minor";
+        state.config = null;
+        state.confidence = 4;
+        yield* reviewPullRequest(opened(64));
+        assert.strictEqual(latest(703)?.conclusion, "failure");
+        assert.include(latest(703)?.summary ?? "", "confidence score below 5/5");
+
+        state.config = '{"checks":{"minConfidence":4}}';
+        yield* reviewPullRequest(opened(65));
+        assert.strictEqual(latest(704)?.conclusion, "success");
       }),
     );
 
