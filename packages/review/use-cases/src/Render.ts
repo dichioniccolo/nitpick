@@ -144,14 +144,19 @@ export interface SummaryInput {
 export const clampConfidence = (value: number): number =>
   Math.min(5, Math.max(1, Math.round(value)));
 
-export const renderSummary = (input: SummaryInput): string => {
-  const confidence = clampConfidence(input.confidence);
-
-  const counts = (["critical", "major", "minor"] as const).flatMap((severity) => {
-    const count = input.findings.filter((finding) => finding.severity === severity).length;
+/** `["1 critical", "2 minor"]`, worst first, leaving out severities with no finding. */
+export const severityCounts = (
+  findings: ReadonlyArray<{ readonly severity: Severity }>,
+): ReadonlyArray<string> =>
+  (["critical", "major", "minor"] as const).flatMap((severity) => {
+    const count = findings.filter((finding) => finding.severity === severity).length;
 
     return count > 0 ? [`${count} ${severity}`] : [];
   });
+
+export const renderSummary = (input: SummaryInput): string => {
+  const confidence = clampConfidence(input.confidence);
+  const counts = severityCounts(input.findings);
 
   const parts = [
     summaryMarker,

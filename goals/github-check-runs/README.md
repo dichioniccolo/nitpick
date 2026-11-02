@@ -38,3 +38,14 @@ Local: `bun run lint`, `bun run check` and `bun run test` (112 tests) pass on `f
 ## Notes
 
 Existing installs must accept the new Checks permission; until then the check silently does not appear.
+
+Backlog from review round 1 (non-blocking):
+
+- A crash between creating a run and saving its id leaves that run `in_progress`; a newer run hides it.
+- Swallowed check write errors log operation and status only, not GitHub's message.
+- Retargeting a PR to an unlisted base, pushing, then retargeting back leaves `skipped`; `pull_request.edited`
+  queues nothing.
+- `review.checkRunId` has no index; Re-run lookups scan one repository's reviews.
+- The sweep does not retry a failed check update.
+- Subscribing to Check run delivers every Actions run's `created` and `completed`; each lands in
+  `webhook_delivery`. Watch the volume.

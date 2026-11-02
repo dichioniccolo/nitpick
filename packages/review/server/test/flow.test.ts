@@ -68,6 +68,10 @@ interface State {
   checkWrites: Array<CheckWrite>;
   /** Fail every check write with this status, as an install without the Checks permission does. */
   failChecks: number | null;
+  /** Fail only updates with this status. */
+  failCheckUpdates: number | null;
+  /** Every check write tried, failed or not. */
+  checkAttempts: Array<"create" | "update">;
 }
 
 interface CheckWrite {
@@ -111,6 +115,8 @@ const initial = (): State => ({
   severity: "major",
   checkWrites: [],
   failChecks: null,
+  failCheckUpdates: null,
+  checkAttempts: [],
 });
 
 const state: State = initial();
@@ -185,8 +191,10 @@ const fakeGitHub: GitHubApi = {
     Effect.sync(() => state.posted.filter((comment) => comment.number === number)),
   listIssueComments: () => Effect.sync(() => state.issueComments),
   commentReactions: () => Effect.sync(() => state.reactions),
-  createCheckRun: (_ref, name, headSha, run) =>
-    state.failChecks === null
+  createCheckRun: (_ref, name, headSha, run) => {
+    state.checkAttempts.push("create");
+
+    return state.failChecks === null
       ? Effect.sync(() => {
           const id = 700 + state.checkWrites.filter((write) => write.op === "create").length;
           state.checkWrites.push({ op: "create", id, name, headSha, run });
@@ -195,15 +203,18 @@ const fakeGitHub: GitHubApi = {
         })
       : Effect.fail(
           new GitHubError({ operation: "createCheckRun", status: state.failChecks, cause: null }),
-        ),
-  updateCheckRun: (_ref, id, run) =>
-    state.failChecks === null
+        );
+  },
+  updateCheckRun: (_ref, id, run) => {
+    state.checkAttempts.push("update");
+    const status = state.failChecks ?? state.failCheckUpdates;
+
+    return status === null
       ? Effect.sync(() => {
           state.checkWrites.push({ op: "update", id, name: null, headSha: null, run });
         })
-      : Effect.fail(
-          new GitHubError({ operation: "updateCheckRun", status: state.failChecks, cause: null }),
-        ),
+      : Effect.fail(new GitHubError({ operation: "updateCheckRun", status, cause: null }));
+  },
   userPermission: (_ref, username) =>
     Effect.sync(() => {
       state.permissionReads.push(username);
@@ -1092,6 +1103,8 @@ describe("check runs", () => {
         assert.strictEqual(row?.checkConclusion, "success");
         assert.strictEqual(latest(700)?.conclusion, "success");
         assert.strictEqual(latest(700)?.title, "1 major");
+        assert.strictEqual(latest(700)?.detailsUrl, `https://nitpick.test/app/reviews/${row?.id}`);
+        assert.strictEqual(opening?.run.externalId, "50");
         assert.lengthOf(creates(), 1);
       }),
     );
@@ -1123,6 +1136,8 @@ describe("check runs", () => {
         yield* Effect.exit(reviewPullRequest(opened(54)));
         assert.strictEqual(latest(700)?.conclusion, "neutral");
         assert.strictEqual(latest(700)?.title, "Review failed");
+        assert.include(latest(700)?.summary ?? "", "https://nitpick.test/app/reviews/");
+        assert.include(latest(700)?.detailsUrl ?? "", "https://nitpick.test/app/reviews/");
         assert.strictEqual((yield* reviewRow(54))[0]?.checkConclusion, "neutral");
 
         state.dieInClaude = false;
@@ -1145,6 +1160,13 @@ describe("check runs", () => {
         assert.lengthOf(creates(), 1);
         assert.strictEqual(latest(700)?.conclusion, "success");
         assert.strictEqual((yield* reviewRow(55))[0]?.checkRunId, 700);
+
+        // Checks turned off between attempts: the live run is still finished, no new one opens.
+        yield* db.update(review).set({ status: "running" }).where(eq(review.prNumber, 55));
+        state.config = '{"checks":{"enabled":false}}';
+        yield* reviewPullRequest({ ...opened(55), trigger: "requested" });
+        assert.lengthOf(creates(), 1);
+        assert.strictEqual(state.checkWrites.at(-1)?.id, 700);
       }),
     );
 
@@ -1169,13 +1191,22 @@ describe("check runs", () => {
         yield* reviewPullRequest(opened(57));
         assert.strictEqual(latest(700)?.conclusion, "failure");
 
+        const turns = state.requests.length;
         state.head = "head2";
         yield* reviewPullRequest({ ...opened(57, "head2"), trigger: "pushed" });
         const carried = creates().at(-1);
         assert.strictEqual(carried?.headSha, "head2");
         assert.strictEqual(carried?.run.conclusion, "failure");
         assert.include(carried?.run.title ?? "", "Carried from head1");
-        assert.strictEqual(state.requests.length, 3);
+        assert.strictEqual(state.requests.length, turns);
+
+        // A force-push back to the reviewed head keeps its failure; a passing `skipped` would clear it.
+        state.head = "head1";
+        yield* reviewPullRequest({ ...opened(57, "head1"), trigger: "pushed" });
+        const back = creates().at(-1);
+        assert.strictEqual(back?.headSha, "head1");
+        assert.strictEqual(back?.run.conclusion, "failure");
+        state.head = "head2";
 
         yield* reviewPullRequest({ ...opened(58, "head2"), trigger: "pushed" });
         assert.strictEqual(creates().at(-1)?.run.conclusion, "skipped");
@@ -1197,6 +1228,13 @@ describe("check runs", () => {
         assert.strictEqual(row?.status, "completed");
         assert.isNull(row?.checkRunId ?? null);
         assert.lengthOf(state.summaries, 2);
+        assert.deepStrictEqual(state.checkAttempts, ["create"]);
+
+        state.failChecks = null;
+        state.failCheckUpdates = 502;
+        yield* reviewPullRequest(opened(63));
+        assert.strictEqual((yield* reviewRow(63))[0]?.status, "completed");
+        assert.deepStrictEqual(state.checkAttempts, ["create", "create", "update"]);
       }),
     );
 
@@ -1236,6 +1274,17 @@ describe("check runs", () => {
         yield* rerun("cr1", 1, "lint", [7]);
         assert.isNull(yield* queue.claim);
 
+        // GitHub also sends `created` and `completed` for our own runs; queuing on them would loop.
+        for (const action of ["created", "completed", "requested_action"]) {
+          yield* handleWebhook(`cr-${action}`, "check_run", {
+            action,
+            repository: { id: 1 },
+            check_run: { id: 1, name: "nitpick", pull_requests: [{ number: 7 }] },
+          });
+        }
+
+        assert.isNull(yield* queue.claim);
+
         yield* rerun("cr2", 1, "nitpick", [7]);
         const direct = reviewJob(yield* queue.claim);
         assert.strictEqual(direct.payload.prNumber, 7);
@@ -1253,7 +1302,24 @@ describe("check runs", () => {
           checkRunId: 4343,
         });
         yield* rerun("cr3", 4343, "nitpick", []);
-        assert.strictEqual(reviewJob(yield* queue.claim).payload.prNumber, 62);
+        const stored = reviewJob(yield* queue.claim);
+        assert.strictEqual(stored.payload.prNumber, 62);
+        yield* queue.complete(stored.id);
+
+        // A skipped fork run is not stored; the PR number in external_id finds it.
+        yield* handleWebhook("cr4", "check_run", {
+          action: "rerequested",
+          repository: { id: 1 },
+          check_run: { id: 9999, name: "nitpick", external_id: "64", pull_requests: [] },
+        });
+        assert.strictEqual(reviewJob(yield* queue.claim).payload.prNumber, 64);
+
+        yield* handleWebhook("cr5", "check_run", {
+          action: "rerequested",
+          repository: { id: 1 },
+          check_run: { id: 9998, name: "nitpick", external_id: "../7", pull_requests: [] },
+        });
+        assert.isNull(yield* queue.claim);
       }),
     );
   });

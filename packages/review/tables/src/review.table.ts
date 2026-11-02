@@ -81,7 +81,7 @@ export const review = pgTable(
     summaryCommentId: bigint({ mode: "number" }),
     /** The `nitpick` check run of this run. Cleared on restart unless a live run is reused. */
     checkRunId: bigint({ mode: "number" }),
-    /** What the check showed. Stored, so a later `failOn` change never re-judges this head. */
+    /** The conclusion this head earned, posted or not. Stored, so a later `failOn` never re-judges it. */
     checkConclusion: text({ enum: ["success", "failure", "neutral", "skipped"] }),
     createdAt: timestamp({ withTimezone: true }).notNull().defaultNow(),
     /** Reset on every run, so the stuck-review sweep does not hit a retry of an old row. */

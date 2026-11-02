@@ -14,8 +14,9 @@ It reproduces the behavior of hosted reviewers such as Greptile. It shares no co
 - Learns from thumbs up and down on its comments, counting only users with write access, and from
   team rules in the dashboard.
 - Posts a `nitpick` check on each head: `failure` when a finding reaches `checks.failOn` (default
-  `critical`), `neutral` when the review itself fails, `skipped` when it is not reviewed, and the last
-  result again on a push it does not review. Require it in branch protection to gate merges.
+  `critical`), `neutral` when the review itself fails, `skipped` when a skip rule applies (draft, label,
+  author, base branch), and the last result again on a push it does not review. Re-run on the check
+  reviews that head; `checks.enabled: false` turns it off. Require it in branch protection to gate merges.
 - Reads `.nitpick.json` from the base commit, so a PR cannot weaken its own review. See
   `.nitpick.example.json`.
 
@@ -45,6 +46,9 @@ Create one at `https://github.com/settings/apps/new`.
 - Account permissions: Email addresses read (optional).
 - Events: Pull request, Push, Issue comment, Check run. Every App also receives `installation` and
   `installation_repositories` by default; they are not selectable.
+- Existing App: add Checks read and write and the Check run event in its settings, then accept the new
+  permission on each installation. Until then nitpick logs `check run write failed` with status 403 and
+  posts no check; reviews still run.
 
 ## Local development
 

@@ -39,9 +39,11 @@ import {
   skipReason,
   summaryMarker,
 } from "@nitpick/review-use-cases";
-import { and, desc, eq, inArray, isNotNull, lt, ne, sql, or } from "drizzle-orm";
+import { and, desc, eq, inArray, isNotNull, lt, sql, or } from "drizzle-orm";
+import * as Duration from "effect/Duration";
 import * as Effect from "effect/Effect";
 import * as Exit from "effect/Exit";
+import * as O from "effect/Option";
 import * as S from "effect/Schema";
 
 import { decoder, objectSchema, runAgent } from "./Agent.ts";
@@ -168,9 +170,14 @@ const toPlaced = (item: StoredFinding): PlacedFinding => ({
   fingerprint: item.fingerprint,
 });
 
+/** A check write that hangs must not hold the review, nor the finalizer that ends a failed one. */
+const checkWriteTimeout = Duration.seconds(15);
+
 /** Check writes never fail a review: a missing Checks permission (403) or an outage only logs. */
 const quietly = <A>(write: Effect.Effect<A, GitHubError>): Effect.Effect<A | null> =>
   write.pipe(
+    Effect.timeoutOption(checkWriteTimeout),
+    Effect.map(O.getOrNull),
     Effect.catchTag("GitHubError", (error) =>
       Effect.as(
         Effect.logWarning("check run write failed", error.operation, error.status ?? "no status"),
@@ -193,10 +200,14 @@ const postUnreviewed = Effect.fnUntraced(function* (
   const db = yield* Database;
   const github = yield* GitHub;
 
+  // The PR number lets Re-run find the PR where GitHub sends no `pull_requests`, as for a fork.
+  const externalId = `${pull.number}`;
+
   const skipped = (why: string): CheckRunState => ({
     status: "completed",
     conclusion: "skipped",
     ...skippedCheckOutput(why),
+    externalId,
   });
 
   if (reason !== null) {
@@ -212,7 +223,7 @@ const postUnreviewed = Effect.fnUntraced(function* (
       and(
         eq(review.repositoryId, repositoryId),
         eq(review.prNumber, pull.number),
-        ne(review.headSha, pull.headSha),
+        // This head's own row counts too: a force-push back to a reviewed head keeps its result.
         isNotNull(review.checkConclusion),
         isNotNull(review.finishedAt),
       ),
@@ -228,6 +239,7 @@ const postUnreviewed = Effect.fnUntraced(function* (
           status: "completed",
           conclusion: last.conclusion,
           ...carriedCheckOutput(last.headSha, last.conclusion),
+          externalId,
         };
 
   yield* quietly(github.createCheckRun(ref, checkName, pull.headSha, run));
@@ -406,7 +418,7 @@ export const reviewPullRequest = Effect.fn("review.pull.run")(function* (payload
         status: "in_progress",
         ...runningCheckOutput(reviewUrl),
         detailsUrl: reviewUrl,
-        externalId: reviewId,
+        externalId: `${pull.number}`,
       }),
     );
 
@@ -420,7 +432,8 @@ export const reviewPullRequest = Effect.fn("review.pull.run")(function* (payload
     return id;
   });
 
-  const checkRunId = !config.checks.enabled ? null : (liveRun ?? (yield* openCheckRun));
+  // A live run is finished whatever the config says now; only a new one waits on `checks.enabled`.
+  const checkRunId = liveRun ?? (config.checks.enabled ? yield* openCheckRun : null);
 
   const finishCheckRun = (run: CheckRunState) =>
     checkRunId === null

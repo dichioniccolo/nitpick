@@ -66,6 +66,7 @@ const CheckRunEvent = S.Struct({
   check_run: S.Struct({
     id: S.Number,
     name: S.String,
+    external_id: S.optional(S.NullOr(S.String)),
     pull_requests: S.Array(S.Struct({ number: S.Number })),
   }),
 });
@@ -178,8 +179,9 @@ const jobsFor = Effect.fnUntraced(function* (event: string, payload: Json) {
       ),
     ),
     // GitHub sends `rerequested` only to the App that made the run, and only someone who can write to
-    // the repository sees the Re-run button. A fork PR's run carries no `pull_requests`, so the run
-    // id is looked up first.
+    // the repository sees the Re-run button. A fork PR's run carries no `pull_requests`, so the stored
+    // run id, then the PR number in `external_id`, find it. Other actions (`created`, `completed`)
+    // must queue nothing, or every run nitpick opens would start another review.
     Match.when("check_run", () =>
       Effect.gen(function* () {
         const { action, repository: repo, check_run: run } = yield* decode(CheckRunEvent, payload);
@@ -192,7 +194,12 @@ const jobsFor = Effect.fnUntraced(function* (event: string, payload: Json) {
           .where(and(eq(review.repositoryId, repo.id), eq(review.checkRunId, run.id)))
           .limit(1);
 
-        const prNumber = reviewed?.prNumber ?? run.pull_requests[0]?.number;
+        // nitpick writes the PR number as `external_id`; anyone's digits there only pick a PR in this repo.
+        const fromExternal = /^[1-9][0-9]{0,9}$/.test(run.external_id ?? "")
+          ? Number(run.external_id)
+          : undefined;
+
+        const prNumber = reviewed?.prNumber ?? run.pull_requests[0]?.number ?? fromExternal;
 
         return prNumber === undefined
           ? none

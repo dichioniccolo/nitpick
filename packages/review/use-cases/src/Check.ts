@@ -1,7 +1,7 @@
 import type { CheckConclusion, FailOn, Severity } from "@nitpick/review-domain";
 
 import { severityRank } from "./Findings.ts";
-import { clampConfidence, sanitize } from "./Render.ts";
+import { clampConfidence, sanitize, severityCounts } from "./Render.ts";
 
 /** The check run's name. Teams require it by name in branch protection, so it never changes. */
 export const checkName = "nitpick";
@@ -33,11 +33,7 @@ export const truncateSummary = (summary: string): string => {
 };
 
 const countsOf = (findings: ReadonlyArray<{ readonly severity: Severity }>): string => {
-  const counts = (["critical", "major", "minor"] as const).flatMap((severity) => {
-    const count = findings.filter((finding) => finding.severity === severity).length;
-
-    return count > 0 ? [`${count} ${severity}`] : [];
-  });
+  const counts = severityCounts(findings);
 
   return counts.length > 0 ? counts.join(", ") : "No issues found";
 };
