@@ -1,7 +1,7 @@
 import { repository } from "@nitpick/code-graph-tables";
 import { repositoryMember } from "@nitpick/identity-tables";
 import { Database } from "@nitpick/postgres";
-import { IndexRepository } from "@nitpick/review-domain";
+import { IndexRepository, ReviewPullRequest } from "@nitpick/review-domain";
 import { finding, learning, review, rule } from "@nitpick/review-tables";
 import { and, asc, count, desc, eq, sql } from "drizzle-orm";
 import * as Context from "effect/Context";
@@ -85,6 +85,8 @@ export class Dashboard extends Context.Service<
       enabled: boolean,
     ) => Effect.Effect<void, NotFound>;
     readonly reindex: (userId: string, repositoryId: number) => Effect.Effect<void, NotFound>;
+    /** Queue a fresh review of the PR's current head, as `@<app> review` would. */
+    readonly retrigger: (userId: string, reviewId: string) => Effect.Effect<void, NotFound>;
   }
 >()("@nitpick/review/Dashboard") {
   static readonly layer = Layer.effect(
@@ -265,6 +267,27 @@ export class Dashboard extends Context.Service<
           requireMember(userId, repositoryId).pipe(
             Effect.andThen(queue.enqueue(IndexRepository.make({ repositoryId }))),
           ),
+        retrigger: (userId, reviewId) =>
+          Effect.gen(function* () {
+            yield* decodeRowId(reviewId);
+
+            const [row] = yield* db
+              .select({ repositoryId: review.repositoryId, prNumber: review.prNumber })
+              .from(review)
+              .where(eq(review.id, reviewId))
+              .pipe(Effect.orDie);
+
+            if (row === undefined) return yield* new NotFound();
+            yield* requireMember(userId, row.repositoryId);
+            yield* queue.enqueue(
+              ReviewPullRequest.make({
+                repositoryId: row.repositoryId,
+                prNumber: row.prNumber,
+                headSha: "",
+                trigger: "requested",
+              }),
+            );
+          }),
       };
     }),
   );

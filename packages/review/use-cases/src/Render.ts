@@ -1,4 +1,4 @@
-import type { Severity } from "@nitpick/review-domain";
+import type { Impact, Severity } from "@nitpick/review-domain";
 
 import type { PlacedFinding } from "./Findings.ts";
 
@@ -132,17 +132,40 @@ export const renderFinding = (finding: PlacedFinding): string => {
 };
 
 export interface SummaryInput {
+  /** `null` on a review saved before the impact line existed. */
+  readonly impact: Impact | null;
+  readonly verdict: string | null;
   readonly summary: string;
+  readonly changes: ReadonlyArray<string>;
   readonly confidence: number;
   readonly diagram: string | undefined;
   readonly findings: ReadonlyArray<PlacedFinding>;
   /** Findings GitHub refused to place inline. They are listed in the comment instead. */
   readonly unplaced: ReadonlyArray<PlacedFinding>;
   readonly reviewUrl: string;
+  readonly retriggerUrl: string;
+  /** Where the button images are served, `<APP_URL>/badges`. */
+  readonly badgesUrl: string;
+  /** Completed reviews on this PR, this one included. */
+  readonly reviewCount: number;
+  readonly commit: { readonly sha: string; readonly url: string };
 }
 
 export const clampConfidence = (value: number): number =>
   Math.min(5, Math.max(1, Math.round(value)));
+
+const impactLabel: Readonly<Record<Impact, string>> = {
+  low: "Low impact",
+  medium: "Medium impact",
+  high: "High impact",
+};
+
+/** A link wrapping a right-floated image, so the buttons sit on the heading's line as GitHub renders it. */
+const button = (href: string, src: string, alt: string): string =>
+  `<a href="${href}"><img align="right" height="28" alt="${alt}" src="${src}"></a>`;
+
+/** One bullet per line: a newline in model text would start a new block. */
+const bullet = (text: string): string => `- ${sanitize(text).replace(/\s*[\r\n]+\s*/g, " ")}`;
 
 /** `["1 critical", "2 minor"]`, worst first, leaving out severities with no finding. */
 export const severityCounts = (
@@ -155,22 +178,28 @@ export const severityCounts = (
   });
 
 export const renderSummary = (input: SummaryInput): string => {
-  const confidence = clampConfidence(input.confidence);
   const counts = severityCounts(input.findings);
 
   const parts = [
     summaryMarker,
-    "## Nitpick review",
-    sanitize(input.summary),
-    `**Confidence to merge: ${confidence}/5** · ${counts.length > 0 ? counts.join(", ") : "no issues found"}`,
+    // Floats stack right to left, so Retrigger ends up rightmost, as on Greptile.
+    `${button(input.retriggerUrl, `${input.badgesUrl}/retrigger.svg`, "Retrigger")}${button(input.reviewUrl, `${input.badgesUrl}/view.svg`, "View in Nitpick")}`,
+    `## Confidence Score: ${clampConfidence(input.confidence)}/5`,
   ];
+
+  if (input.impact !== null && input.verdict !== null && input.verdict.trim() !== "")
+    parts.push(`**[${impactLabel[input.impact]}]** ${sanitize(input.verdict)}`);
+
+  parts.push("### Summary", sanitize(input.summary));
+
+  if (input.changes.length > 0) parts.push(input.changes.map(bullet).join("\n"));
+
+  parts.push(`**Findings:** ${counts.length > 0 ? counts.join(", ") : "no issues found"}`);
 
   if (input.diagram !== undefined && input.diagram.trim() !== "") {
     const diagram = unwrapFence(stripNul(input.diagram));
     const fence = fenceFor(diagram);
-    parts.push(
-      `<details><summary>Sequence diagram</summary>\n\n${fence}mermaid\n${diagram}\n${fence}\n\n</details>`,
-    );
+    parts.push(`### Diagram\n\n${fence}mermaid\n${diagram}\n${fence}`);
   }
 
   if (input.unplaced.length > 0) {
@@ -182,7 +211,9 @@ export const renderSummary = (input: SummaryInput): string => {
     parts.push(`### Findings outside the diff view\n\n${rows.join("\n")}`);
   }
 
-  parts.push(`[Open in Nitpick](${input.reviewUrl})`);
+  parts.push(
+    `<sub>Reviews (${input.reviewCount}) · Last reviewed commit: <a href="${input.commit.url}">${input.commit.sha.slice(0, 7)}</a> · <a href="${input.reviewUrl}">Reviewed by Nitpick</a></sub>`,
+  );
 
   return parts.join("\n\n");
 };

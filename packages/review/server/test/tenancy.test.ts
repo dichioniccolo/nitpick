@@ -4,7 +4,8 @@ import { replaceMembership } from "@nitpick/identity-server";
 import { user } from "@nitpick/identity-tables";
 import { Database } from "@nitpick/postgres";
 import { layerMigrated, repositoryMigrations } from "@nitpick/postgres/test";
-import { review, rule } from "@nitpick/review-tables";
+import { ReviewPullRequest } from "@nitpick/review-domain";
+import { job, review, rule } from "@nitpick/review-tables";
 import { eq } from "drizzle-orm";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
@@ -129,6 +130,70 @@ describe("tenant isolation", () => {
       Effect.gen(function* () {
         const dashboard = yield* Dashboard;
         yield* denied(dashboard.repository(someone, "acme/\u0000"));
+      }),
+    );
+
+    it.effect("only a member can retrigger a review, and it queues a requested one", () =>
+      Effect.gen(function* () {
+        const db = yield* Database;
+        const dashboard = yield* Dashboard;
+        yield* db
+          .insert(installation)
+          .values({ id: 3, accountLogin: "beta", accountType: "Organization" })
+          .onConflictDoNothing();
+        yield* db
+          .insert(repository)
+          .values({
+            id: 30,
+            installationId: 3,
+            fullName: "beta/app",
+            defaultBranch: "main",
+            private: true,
+          })
+          .onConflictDoNothing();
+
+        const [member, stranger] = yield* db
+          .insert(user)
+          .values([
+            { name: "m", email: "m@x" },
+            { name: "s", email: "s@x" },
+          ])
+          .returning();
+
+        if (member === undefined || stranger === undefined) throw new Error("expected users");
+        yield* replaceMembership(member.id, [30]);
+
+        const [row] = yield* db
+          .insert(review)
+          .values({
+            repositoryId: 30,
+            prNumber: 4,
+            prTitle: "t",
+            prAuthor: "dev",
+            headSha: "h",
+            baseSha: "b",
+          })
+          .returning();
+
+        if (row === undefined) throw new Error("expected a review");
+        yield* db.delete(job);
+
+        yield* denied(dashboard.retrigger(stranger.id, row.id));
+        yield* denied(dashboard.retrigger(member.id, "not-a-uuid"));
+        yield* denied(dashboard.retrigger(member.id, someone));
+        assert.lengthOf(yield* db.select().from(job), 0);
+
+        yield* dashboard.retrigger(member.id, row.id);
+        const [queued] = yield* db.select().from(job);
+        assert.deepStrictEqual(
+          queued?.payload,
+          ReviewPullRequest.make({
+            repositoryId: 30,
+            prNumber: 4,
+            headSha: "",
+            trigger: "requested",
+          }),
+        );
       }),
     );
   });

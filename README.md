@@ -17,6 +17,9 @@ It reproduces the behavior of hosted reviewers such as Greptile. It shares no co
   `critical`), `neutral` when the review itself fails, `skipped` when a skip rule applies (draft, label,
   author, base branch), and the last result again on a push it does not review. Re-run on the check
   reviews that head; `checks.enabled: false` turns it off. Require it in branch protection to gate merges.
+- Writes one summary comment per PR in Greptile's layout: confidence score, an impact-tagged verdict,
+  a summary with bullets, the sequence diagram, and View in Nitpick and Retrigger buttons. Retrigger
+  opens a confirm page in the dashboard, open to repository members only.
 - Reads `.nitpick.json` from the base commit, so a PR cannot weaken its own review. See
   `.nitpick.example.json`.
 

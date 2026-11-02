@@ -71,7 +71,12 @@ export const review = pgTable(
     status: text({ enum: ["running", "completed", "skipped", "failed"] })
       .notNull()
       .default("running"),
+    impact: text({ enum: ["low", "medium", "high"] }),
+    /** One sentence after the impact label: what the reviewer thinks of the change. */
+    verdict: text(),
     summary: text(),
+    /** The summary's bullets, one per notable change. */
+    changes: jsonb().$type<ReadonlyArray<string>>(),
     confidence: integer(),
     diagram: text(),
     error: text(),

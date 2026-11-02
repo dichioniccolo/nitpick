@@ -1,6 +1,7 @@
 "use server";
 
 import { revalidatePath } from "next/cache";
+import { redirect } from "next/navigation";
 
 import { dashboard } from "./session";
 
@@ -44,4 +45,11 @@ export const toggleRepository = async (form: FormData): Promise<void> => {
 export const reindex = async (form: FormData): Promise<void> => {
   await dashboard((service, user) => service.reindex(user.id, number(form, "repositoryId")));
   done(form);
+};
+
+/** The comment's Retrigger button lands on a confirm page; only this POST queues the review. */
+export const retriggerReview = async (form: FormData): Promise<void> => {
+  const reviewId = text(form, "reviewId");
+  await dashboard((service, user) => service.retrigger(user.id, reviewId));
+  redirect(`/app/reviews/${reviewId}?retriggered=1`);
 };

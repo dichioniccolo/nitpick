@@ -21,6 +21,7 @@ const repoHeading = (page: Page) => page.getByRole("heading", { name: repoName }
 const reviewHeading = (page: Page) => page.getByRole("heading", { name: "Store amounts in euros" });
 const repoRow = (page: Page) => page.getByRole("link", { name: new RegExp(`^${repoName} Ready$`) });
 const reviewRow = (page: Page) => page.getByRole("link", { name: /Store amounts in euros/ });
+const retriggerButton = (page: Page) => page.getByRole("button", { name: "Review again" });
 
 test("the build exposes the testing API, so no test passes vacuously", async ({ request }) => {
   const plain = await (await request.get("/")).text();
@@ -56,6 +57,11 @@ test.describe("dashboard", () => {
     { path: "/app/reviews", marker: "reviews-shell", data: reviewRow },
     { path: `/app/repos/${repoName}`, marker: "repository-shell", data: repoHeading },
     { path: `/app/reviews/${reviewId}`, marker: "review-shell", data: reviewHeading },
+    {
+      path: `/app/reviews/${reviewId}/retrigger`,
+      marker: "retrigger-shell",
+      data: retriggerButton,
+    },
   ]) {
     test(`${path} commits its shell under instant() and holds its data`, async ({
       page,
@@ -106,7 +112,7 @@ test.describe("dashboard", () => {
   });
 
   // notFound() fires after the shell flushed with 200. See "Walls" in instant-nav.rig.md.
-  for (const path of ["/app/repos/x/y", "/app/reviews/abc"]) {
+  for (const path of ["/app/repos/x/y", "/app/reviews/abc", "/app/reviews/abc/retrigger"]) {
     test(`${path} answers 200 with the not-found page`, async ({ page }) => {
       const response = await page.goto(path);
 
