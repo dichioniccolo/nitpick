@@ -67,16 +67,16 @@ Every PR head nitpick sees gets a check run named `nitpick`:
 
 ## Acceptance criteria
 
-- [ ] `flow.test.ts` covers: run created `in_progress` then `success`; `failure` with a critical finding;
+- [x] `flow.test.ts` covers: run created `in_progress` then `success`; `failure` with a critical finding;
       `failOn: "major"` fails on a major; `failOn: "never"` succeeds; `neutral` on a review error; `skipped`
       on a draft; carry-forward on a push with updates off; `checks.enabled: false` posts nothing; 403 leaves
       the review `completed`; a retry updates the same run.
-- [ ] Webhook test: `check_run.rerequested` for a `nitpick` run queues `ReviewPullRequest` with trigger
+- [x] Webhook test: `check_run.rerequested` for a `nitpick` run queues `ReviewPullRequest` with trigger
       `requested`; other check names are ignored.
-- [ ] Use-cases unit tests for `checkConclusion` and output truncation.
-- [ ] Migration generated with `bun run db:generate --name review_check_runs`.
-- [ ] README lists the Checks permission and Check run event.
-- [ ] No unrelated refactors or formatting churn.
+- [x] Use-cases unit tests for `checkConclusion` and output truncation.
+- [x] Migration generated with `bun run db:generate --name review_check_runs`.
+- [x] README lists the Checks permission and Check run event.
+- [x] No unrelated refactors or formatting churn.
 
 ## Verification matrix
 

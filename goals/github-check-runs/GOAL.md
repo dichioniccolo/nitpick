@@ -32,11 +32,11 @@ Workflow:
 
 Acceptance:
 
-- [ ] `SPEC.md` acceptance criteria are satisfied.
-- [ ] `bun run lint`, `bun run check` and `bun run test` pass; `bun run e2e:build && bun run e2e` too when a
+- [x] `SPEC.md` acceptance criteria are satisfied.
+- [x] `bun run lint`, `bun run check` and `bun run test` pass; `bun run e2e:build && bun run e2e` too when a
       page, layout or loader changed.
-- [ ] A schema change ships as a migration from `bun run db:generate --name <change>`.
-- [ ] No unrelated refactors or formatting churn.
+- [x] A schema change ships as a migration from `bun run db:generate --name <change>`.
+- [x] No unrelated refactors or formatting churn.
 
 Verification:
 

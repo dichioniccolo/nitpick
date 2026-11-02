@@ -2,19 +2,19 @@
 
 ## Status
 
-Status: `P3 PR`
+Status: `completed`
 
 ## Phases
 
 Phase ids match `ops/manifest.json` `phases[]`. A plan must not contradict its own manifest.
 
-| Phase        | Status  | Goal                                                        | Exit criteria                                              |
-| ------------ | ------- | ----------------------------------------------------------- | ---------------------------------------------------------- |
-| P0 Research  | done    | Inspect the source hierarchy and confirm scope.             | Required facts and blockers are recorded.                  |
-| P1 Implement | done    | Make the smallest changes that satisfy `SPEC.md`.           | Acceptance criteria are met.                               |
-| P2 Verify    | done    | Run required checks and the quality loop; capture evidence. | Verification is green or blockers are documented.          |
-| P3 PR        | active  | Open the PR and drive it to merge.                          | Required checks green, review threads resolved, PR merged. |
-| P4 Close     | pending | Write the reflection and flip packet state.                 | Status and evidence updated; a reflection exists.          |
+| Phase        | Status | Goal                                                        | Exit criteria                                              |
+| ------------ | ------ | ----------------------------------------------------------- | ---------------------------------------------------------- |
+| P0 Research  | done   | Inspect the source hierarchy and confirm scope.             | Required facts and blockers are recorded.                  |
+| P1 Implement | done   | Make the smallest changes that satisfy `SPEC.md`.           | Acceptance criteria are met.                               |
+| P2 Verify    | done   | Run required checks and the quality loop; capture evidence. | Verification is green or blockers are documented.          |
+| P3 PR        | done   | Open the PR and drive it to merge.                          | Required checks green, review threads resolved, PR merged. |
+| P4 Close     | done   | Write the reflection and flip packet state.                 | Status and evidence updated; a reflection exists.          |
 
 ## P1 order (from the exploration MAP)
 

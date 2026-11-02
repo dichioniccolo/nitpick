@@ -2,7 +2,7 @@
 
 ## Status
 
-Lifecycle: `active`
+Lifecycle: `completed-retained`
 
 Source: [`ops/manifest.json`](./ops/manifest.json)
 
@@ -29,11 +29,11 @@ follow the instructions in goals/github-check-runs/GOAL.md
 
 ## Current phase
 
-P3 PR. Quality loop closed after two rounds with zero required findings; next: drive the PR to merge.
+Closed. Shipped in [PR #1](https://github.com/dichioniccolo/nitpick/pull/1). Next work: the backlog below.
 
 ## Latest evidence
 
-Local: `bun run lint`, `bun run check` and `bun run test` (112 tests) pass on `feat/github-check-runs`.
+[PR #1](https://github.com/dichioniccolo/nitpick/pull/1): CI green (types, lint, format, tests; Helm chart; instant navigation guard). Reflection: [`history/reflections/2026-11-02-claude.md`](./history/reflections/2026-11-02-claude.md).
 
 ## Notes
 

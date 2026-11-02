@@ -3,7 +3,7 @@
   "initiative": {
     "id": "github-check-runs",
     "title": "GitHub check runs",
-    "status": "active",
+    "status": "completed-retained",
     "created": "2026-11-02",
     "updated": "2026-11-02",
     "packetAnchorDocument": "SPEC.md"
@@ -19,7 +19,7 @@
     "requiresPullRequest": true,
     "requiresMerged": true,
     "statement": "Not achieved until this goal's work merges through a PR whose required checks pass.",
-    "finalPullRequest": null
+    "finalPullRequest": 1
   },
   "currentSourceOfTruth": [
     "CLAUDE.md",
@@ -59,12 +59,12 @@
     {
       "id": "P3",
       "name": "PR to merge",
-      "status": "in_progress"
+      "status": "completed"
     },
     {
       "id": "P4",
       "name": "Close",
-      "status": "pending"
+      "status": "completed"
     }
   ],
   "verificationCommands": [
