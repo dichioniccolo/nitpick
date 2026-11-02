@@ -1,0 +1,62 @@
+{
+  "schemaVersion": "initiative-manifest/v2",
+  "initiative": {
+    "id": "<slug>",
+    "title": "<Goal Title>",
+    "status": "active",
+    "created": "YYYY-MM-DD",
+    "updated": "YYYY-MM-DD",
+    "packetAnchorDocument": "SPEC.md"
+  },
+  "packetPath": "goals/<slug>",
+  "mission": "<one-line mission>",
+  "executionCapable": true,
+  "provenance": {
+    "exploration": "explorations/<slug>",
+    "graduated": "YYYY-MM-DD"
+  },
+  "completionGate": {
+    "requiresPullRequest": true,
+    "requiresMerged": true,
+    "statement": "Not achieved until this goal's work merges through a PR whose required checks pass.",
+    "finalPullRequest": null
+  },
+  "currentSourceOfTruth": [
+    "CLAUDE.md",
+    "standards/ARCHITECTURE.md",
+    "goals/<slug>/README.md",
+    "goals/<slug>/SPEC.md",
+    "goals/<slug>/PLAN.md",
+    "goals/<slug>/GOAL.md",
+    "goals/<slug>/research/SOURCES.md"
+  ],
+  "researchReports": ["research/SOURCES.md"],
+  "agentLaunchers": [
+    {
+      "kind": "claude-code",
+      "path": "GOAL.md",
+      "targetChars": 3500,
+      "maxChars": 4000,
+      "command": "follow the instructions in goals/<slug>/GOAL.md"
+    }
+  ],
+  "phases": [
+    { "id": "P0", "name": "Research", "status": "pending" },
+    { "id": "P1", "name": "Implement", "status": "pending" },
+    { "id": "P2", "name": "Verify", "status": "pending" },
+    { "id": "P3", "name": "PR to merge", "status": "pending" },
+    { "id": "P4", "name": "Close", "status": "pending" }
+  ],
+  "verificationCommands": [
+    "test \"$(wc -m < goals/<slug>/GOAL.md)\" -le 4000",
+    "jq . goals/<slug>/ops/manifest.json",
+    "bun run lint",
+    "bun run check",
+    "bun run test"
+  ],
+  "stopConditions": [
+    "Required source files are missing or materially contradictory.",
+    "Any spend: purchases, paid services, quota top-ups or plan changes need the operator.",
+    "The same blocker repeats after reasonable investigation."
+  ]
+}

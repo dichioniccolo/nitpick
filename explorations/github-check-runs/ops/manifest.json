@@ -1,0 +1,17 @@
+{
+  "schemaVersion": "exploration-manifest/v1",
+  "exploration": {
+    "slug": "github-check-runs",
+    "title": "GitHub check runs",
+    "status": "graduated",
+    "stage": "graduate",
+    "openQuestions": [],
+    "sources": ["research/SOURCES.md"],
+    "links": {
+      "goals": ["goals/github-check-runs"],
+      "supersededBy": null
+    },
+    "created": "2026-11-02",
+    "updated": "2026-11-02"
+  }
+}
