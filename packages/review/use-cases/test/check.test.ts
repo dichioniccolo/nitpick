@@ -109,6 +109,15 @@ describe("checks config", () => {
         resolveConfig(yield* decode('{"checks":{"minConfidence":3}}')).checks.minConfidence,
         3,
       );
+      assert.strictEqual(
+        resolveConfig(yield* decode('{"checks":{"failOn":"never"}}')).checks.minConfidence,
+        1,
+      );
+      assert.strictEqual(
+        resolveConfig(yield* decode('{"checks":{"failOn":"never","minConfidence":4}}')).checks
+          .minConfidence,
+        4,
+      );
       assert.isTrue(Exit.isFailure(yield* Effect.exit(decode('{"checks":{"minConfidence":6}}'))));
       assert.isTrue(Exit.isFailure(yield* Effect.exit(decode('{"checks":{"minConfidence":4.5}}'))));
       const bad = yield* Effect.exit(decode('{"checks":{"failOn":"blocker"}}'));

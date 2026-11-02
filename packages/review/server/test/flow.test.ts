@@ -1134,7 +1134,9 @@ describe("check runs", () => {
         yield* reviewPullRequest(opened(52));
         assert.strictEqual(latest(701)?.conclusion, "failure");
 
+        // Report-only stays report-only, even under the default minConfidence.
         state.severity = "critical";
+        state.confidence = 2;
         state.config = '{"checks":{"failOn":"never"}}';
         yield* reviewPullRequest(opened(53));
         assert.strictEqual(latest(702)?.conclusion, "success");
