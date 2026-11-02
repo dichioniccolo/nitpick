@@ -71,6 +71,16 @@ export interface Reaction {
   readonly user: string | null;
 }
 
+/** A check run's state. `conclusion` is set only once `status` is `completed`. */
+export interface CheckRunState {
+  readonly status: "in_progress" | "completed";
+  readonly conclusion?: "success" | "failure" | "neutral" | "skipped" | undefined;
+  readonly title: string;
+  readonly summary: string;
+  readonly detailsUrl?: string | undefined;
+  readonly externalId?: string | undefined;
+}
+
 /** Everything the app does on GitHub. A narrow port, so tests swap it for a fake. */
 export interface GitHubApi {
   readonly listRepositories: (
@@ -117,6 +127,18 @@ export interface GitHubApi {
     ref: RepoRef,
     commentId: number,
   ) => Effect.Effect<ReadonlyArray<Reaction>, GitHubError>;
+  /** Create a check run on `headSha`. A 403 means the install has not granted Checks. */
+  readonly createCheckRun: (
+    ref: RepoRef,
+    name: string,
+    headSha: string,
+    run: CheckRunState,
+  ) => Effect.Effect<number, GitHubError>;
+  readonly updateCheckRun: (
+    ref: RepoRef,
+    checkRunId: number,
+    run: CheckRunState,
+  ) => Effect.Effect<void, GitHubError>;
   /** `admin`, `maintain`, `write`, `triage`, `read` or `none`; `none` for an unknown user. */
   readonly userPermission: (ref: RepoRef, username: string) => Effect.Effect<string, GitHubError>;
 }
@@ -184,6 +206,30 @@ const toReviewComment = ({ path, line, startLine, body }: InlineComment) =>
   startLine === undefined
     ? { path, line, body, side: "RIGHT" }
     : { path, line, body, side: "RIGHT", start_line: startLine, start_side: "RIGHT" };
+
+interface CheckRunParams {
+  status: CheckRunState["status"];
+  output: { title: string; summary: string };
+  conclusion?: NonNullable<CheckRunState["conclusion"]>;
+  details_url?: string;
+  external_id?: string;
+}
+
+/** The REST fields of a check run, with an unset field left out rather than sent empty. */
+const toCheckRun = (run: CheckRunState): CheckRunParams => {
+  const params: CheckRunParams = {
+    status: run.status,
+    output: { title: run.title, summary: run.summary },
+  };
+
+  if (run.conclusion !== undefined) params.conclusion = run.conclusion;
+
+  if (run.detailsUrl !== undefined) params.details_url = run.detailsUrl;
+
+  if (run.externalId !== undefined) params.external_id = run.externalId;
+
+  return params;
+};
 
 const PrivateKey = Config.Redacted("GITHUB_APP_PRIVATE_KEY");
 
@@ -408,6 +454,31 @@ export class GitHub extends Context.Service<GitHub, GitHubApi>()("@nitpick/githu
             );
 
             return rows.map((row) => ({ content: row.content, user: row.user?.login ?? null }));
+          }),
+        createCheckRun: (ref, name, headSha, run) =>
+          call("createCheckRun", async () => {
+            const octokit = await client(ref.installationId);
+
+            const { data } = await octokit.rest.checks.create({
+              owner: ref.owner,
+              repo: ref.repo,
+              name,
+              head_sha: headSha,
+              ...toCheckRun(run),
+            });
+
+            return data.id;
+          }),
+        updateCheckRun: (ref, checkRunId, run) =>
+          call("updateCheckRun", async () => {
+            const octokit = await client(ref.installationId);
+
+            await octokit.rest.checks.update({
+              owner: ref.owner,
+              repo: ref.repo,
+              check_run_id: checkRunId,
+              ...toCheckRun(run),
+            });
           }),
         userPermission: (ref, username) =>
           call("userPermission", async () => {

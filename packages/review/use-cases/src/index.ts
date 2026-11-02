@@ -1,3 +1,5 @@
+export * from "./Check.ts";
+
 export * from "./Diff.ts";
 
 export * from "./Eligibility.ts";

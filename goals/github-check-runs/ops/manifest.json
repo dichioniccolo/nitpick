@@ -1,0 +1,83 @@
+{
+  "schemaVersion": "initiative-manifest/v2",
+  "initiative": {
+    "id": "github-check-runs",
+    "title": "GitHub check runs",
+    "status": "completed-retained",
+    "created": "2026-11-02",
+    "updated": "2026-11-02",
+    "packetAnchorDocument": "SPEC.md"
+  },
+  "packetPath": "goals/github-check-runs",
+  "mission": "Post a nitpick check run per reviewed head that passes or fails on published findings.",
+  "executionCapable": true,
+  "provenance": {
+    "exploration": "explorations/github-check-runs",
+    "graduated": "2026-11-02"
+  },
+  "completionGate": {
+    "requiresPullRequest": true,
+    "requiresMerged": true,
+    "statement": "Not achieved until this goal's work merges through a PR whose required checks pass.",
+    "finalPullRequest": 1
+  },
+  "currentSourceOfTruth": [
+    "CLAUDE.md",
+    "standards/ARCHITECTURE.md",
+    "goals/github-check-runs/README.md",
+    "goals/github-check-runs/SPEC.md",
+    "goals/github-check-runs/PLAN.md",
+    "goals/github-check-runs/GOAL.md",
+    "goals/github-check-runs/research/SOURCES.md"
+  ],
+  "researchReports": ["research/SOURCES.md"],
+  "agentLaunchers": [
+    {
+      "kind": "claude-code",
+      "path": "GOAL.md",
+      "targetChars": 3500,
+      "maxChars": 4000,
+      "command": "follow the instructions in goals/github-check-runs/GOAL.md"
+    }
+  ],
+  "phases": [
+    {
+      "id": "P0",
+      "name": "Research",
+      "status": "completed"
+    },
+    {
+      "id": "P1",
+      "name": "Implement",
+      "status": "completed"
+    },
+    {
+      "id": "P2",
+      "name": "Verify",
+      "status": "completed"
+    },
+    {
+      "id": "P3",
+      "name": "PR to merge",
+      "status": "completed"
+    },
+    {
+      "id": "P4",
+      "name": "Close",
+      "status": "completed"
+    }
+  ],
+  "verificationCommands": [
+    "test \"$(wc -m < goals/github-check-runs/GOAL.md)\" -le 4000",
+    "jq . goals/github-check-runs/ops/manifest.json",
+    "bun run db:generate --name review_check_runs (once, then commit the migration)",
+    "bun run lint",
+    "bun run check",
+    "bun run test"
+  ],
+  "stopConditions": [
+    "Required source files are missing or materially contradictory.",
+    "Any spend: purchases, paid services, quota top-ups or plan changes need the operator.",
+    "The same blocker repeats after reasonable investigation."
+  ]
+}

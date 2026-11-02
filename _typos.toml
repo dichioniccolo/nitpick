@@ -4,3 +4,7 @@ annote = "annote"
 Somes = "Somes"
 somes = "somes"
 Accademia = "Accademia"
+
+[files]
+# Exploration captures are verbatim raw dumps.
+extend-exclude = ["explorations/*/CAPTURE.md"]
