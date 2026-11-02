@@ -5,6 +5,7 @@ import { CodeSearch, Indexer } from "@nitpick/code-graph-server";
 import { codeFile, codeSymbol, installation, repository } from "@nitpick/code-graph-tables";
 import {
   type AuthoredComment,
+  type CheckRunState,
   GitHub,
   type GitHubApi,
   GitHubError,
@@ -63,6 +64,18 @@ interface State {
   issueComments: Array<AuthoredComment>;
   branch: string;
   tree: ReadonlyArray<{ readonly name: string; readonly data: string }>;
+  severity: "critical" | "major" | "minor";
+  checkWrites: Array<CheckWrite>;
+  /** Fail every check write with this status, as an install without the Checks permission does. */
+  failChecks: number | null;
+}
+
+interface CheckWrite {
+  readonly op: "create" | "update";
+  readonly id: number;
+  readonly name: string | null;
+  readonly headSha: string | null;
+  readonly run: CheckRunState;
 }
 
 const billing = {
@@ -95,6 +108,9 @@ const initial = (): State => ({
   issueComments: [],
   branch: "base1",
   tree: [billing, { name: "acme-api-base1/node_modules/x/index.js", data: "function hidden() {}" }],
+  severity: "major",
+  checkWrites: [],
+  failChecks: null,
 });
 
 const state: State = initial();
@@ -169,6 +185,25 @@ const fakeGitHub: GitHubApi = {
     Effect.sync(() => state.posted.filter((comment) => comment.number === number)),
   listIssueComments: () => Effect.sync(() => state.issueComments),
   commentReactions: () => Effect.sync(() => state.reactions),
+  createCheckRun: (_ref, name, headSha, run) =>
+    state.failChecks === null
+      ? Effect.sync(() => {
+          const id = 700 + state.checkWrites.filter((write) => write.op === "create").length;
+          state.checkWrites.push({ op: "create", id, name, headSha, run });
+
+          return id;
+        })
+      : Effect.fail(
+          new GitHubError({ operation: "createCheckRun", status: state.failChecks, cause: null }),
+        ),
+  updateCheckRun: (_ref, id, run) =>
+    state.failChecks === null
+      ? Effect.sync(() => {
+          state.checkWrites.push({ op: "update", id, name: null, headSha: null, run });
+        })
+      : Effect.fail(
+          new GitHubError({ operation: "updateCheckRun", status: state.failChecks, cause: null }),
+        ),
   userPermission: (_ref, username) =>
     Effect.sync(() => {
       state.permissionReads.push(username);
@@ -242,7 +277,7 @@ const fakeClaude = {
                   {
                     path: "src/billing.ts",
                     line: 2,
-                    severity: "major",
+                    severity: state.severity,
                     category: "logic",
                     title: "audit undefined",
                     body: "No import.",
@@ -1024,6 +1059,201 @@ describe("tool input", () => {
 
         const whole = yield* read.run({ path: "src/billing.ts", startLine: 2 });
         assert.include(whole, "2 line two");
+      }),
+    );
+  });
+});
+
+describe("check runs", () => {
+  layer(Services)((it) => {
+    const fresh = Effect.gen(function* () {
+      yield* reset;
+      const db = yield* Database;
+
+      if ((yield* db.select().from(repository)).length === 0) yield* seed;
+    }).pipe(Effect.orDie);
+
+    const creates = () => state.checkWrites.filter((write) => write.op === "create");
+
+    /** The newest state GitHub holds for one run. */
+    const latest = (id: number) => state.checkWrites.findLast((write) => write.id === id)?.run;
+
+    it.effect("opens in progress, then passes when nothing reaches failOn", () =>
+      Effect.gen(function* () {
+        yield* fresh;
+        yield* reviewPullRequest(opened(50));
+        const [opening] = creates();
+        const [row] = yield* reviewRow(50);
+        assert.strictEqual(opening?.name, "nitpick");
+        assert.strictEqual(opening?.headSha, "head1");
+        assert.strictEqual(opening?.run.status, "in_progress");
+        assert.strictEqual(opening?.run.detailsUrl, `https://nitpick.test/app/reviews/${row?.id}`);
+        assert.strictEqual(row?.checkRunId, 700);
+        assert.strictEqual(row?.checkConclusion, "success");
+        assert.strictEqual(latest(700)?.conclusion, "success");
+        assert.strictEqual(latest(700)?.title, "1 major");
+        assert.lengthOf(creates(), 1);
+      }),
+    );
+
+    it.effect("fails on a finding at or above failOn, and never with failOn never", () =>
+      Effect.gen(function* () {
+        yield* fresh;
+        state.severity = "critical";
+        yield* reviewPullRequest(opened(51));
+        assert.strictEqual(latest(700)?.conclusion, "failure");
+        assert.strictEqual((yield* reviewRow(51))[0]?.checkConclusion, "failure");
+
+        state.severity = "major";
+        state.config = '{"checks":{"failOn":"major"}}';
+        yield* reviewPullRequest(opened(52));
+        assert.strictEqual(latest(701)?.conclusion, "failure");
+
+        state.severity = "critical";
+        state.config = '{"checks":{"failOn":"never"}}';
+        yield* reviewPullRequest(opened(53));
+        assert.strictEqual(latest(702)?.conclusion, "success");
+      }),
+    );
+
+    it.effect("ends neutral when the review fails, and a retry opens a new run", () =>
+      Effect.gen(function* () {
+        yield* fresh;
+        state.dieInClaude = true;
+        yield* Effect.exit(reviewPullRequest(opened(54)));
+        assert.strictEqual(latest(700)?.conclusion, "neutral");
+        assert.strictEqual(latest(700)?.title, "Review failed");
+        assert.strictEqual((yield* reviewRow(54))[0]?.checkConclusion, "neutral");
+
+        state.dieInClaude = false;
+        yield* reviewPullRequest(opened(54));
+        assert.lengthOf(creates(), 2);
+        assert.strictEqual(latest(701)?.conclusion, "success");
+      }),
+    );
+
+    it.effect("a retry of a run cut off mid-way reuses its live check run", () =>
+      Effect.gen(function* () {
+        yield* fresh;
+        const db = yield* Database;
+        state.failSummary = true;
+        yield* Effect.exit(reviewPullRequest(opened(55)));
+        // A lapsed lease: the worker died before its finalizer ran, so the row still reads running.
+        yield* db.update(review).set({ status: "running" }).where(eq(review.prNumber, 55));
+        state.failSummary = false;
+        yield* reviewPullRequest(opened(55));
+        assert.lengthOf(creates(), 1);
+        assert.strictEqual(latest(700)?.conclusion, "success");
+        assert.strictEqual((yield* reviewRow(55))[0]?.checkRunId, 700);
+      }),
+    );
+
+    it.effect("skips with the reason and spends nothing", () =>
+      Effect.gen(function* () {
+        yield* fresh;
+        state.pull = { draft: true };
+        yield* reviewPullRequest(opened(56));
+        const [skip] = creates();
+        assert.strictEqual(skip?.run.status, "completed");
+        assert.strictEqual(skip?.run.conclusion, "skipped");
+        assert.include(skip?.run.summary ?? "", "draft");
+        assert.lengthOf(yield* reviewRow(56), 0);
+        assert.lengthOf(state.requests, 0);
+      }),
+    );
+
+    it.effect("a push nitpick does not review carries the last result forward", () =>
+      Effect.gen(function* () {
+        yield* fresh;
+        state.severity = "critical";
+        yield* reviewPullRequest(opened(57));
+        assert.strictEqual(latest(700)?.conclusion, "failure");
+
+        state.head = "head2";
+        yield* reviewPullRequest({ ...opened(57, "head2"), trigger: "pushed" });
+        const carried = creates().at(-1);
+        assert.strictEqual(carried?.headSha, "head2");
+        assert.strictEqual(carried?.run.conclusion, "failure");
+        assert.include(carried?.run.title ?? "", "Carried from head1");
+        assert.strictEqual(state.requests.length, 3);
+
+        yield* reviewPullRequest({ ...opened(58, "head2"), trigger: "pushed" });
+        assert.strictEqual(creates().at(-1)?.run.conclusion, "skipped");
+      }),
+    );
+
+    it.effect("posts nothing when checks are off, and a 403 leaves the review whole", () =>
+      Effect.gen(function* () {
+        yield* fresh;
+        state.config = '{"checks":{"enabled":false}}';
+        yield* reviewPullRequest(opened(59));
+        assert.lengthOf(state.checkWrites, 0);
+        assert.strictEqual((yield* reviewRow(59))[0]?.checkConclusion, "success");
+
+        state.config = null;
+        state.failChecks = 403;
+        yield* reviewPullRequest(opened(60));
+        const [row] = yield* reviewRow(60);
+        assert.strictEqual(row?.status, "completed");
+        assert.isNull(row?.checkRunId ?? null);
+        assert.lengthOf(state.summaries, 2);
+      }),
+    );
+
+    it.effect("the sweep completes a stranded run neutral", () =>
+      Effect.gen(function* () {
+        yield* fresh;
+        const db = yield* Database;
+        yield* db.insert(review).values({
+          repositoryId: 1,
+          prNumber: 61,
+          prTitle: "t",
+          prAuthor: "dev",
+          headSha: "h",
+          baseSha: "b",
+          checkRunId: 4242,
+          startedAt: sql`now() - interval '3 hours'`,
+        });
+        yield* sweepStuckReviews;
+        assert.strictEqual(latest(4242)?.conclusion, "neutral");
+        assert.strictEqual((yield* reviewRow(61))[0]?.checkConclusion, "neutral");
+      }),
+    );
+
+    it.effect("Re-run on a nitpick check queues a requested review", () =>
+      Effect.gen(function* () {
+        yield* fresh;
+        const db = yield* Database;
+        const queue = yield* Queue;
+
+        const rerun = (delivery: string, id: number, name: string, prs: ReadonlyArray<number>) =>
+          handleWebhook(delivery, "check_run", {
+            action: "rerequested",
+            repository: { id: 1 },
+            check_run: { id, name, pull_requests: prs.map((number) => ({ number })) },
+          });
+
+        yield* rerun("cr1", 1, "lint", [7]);
+        assert.isNull(yield* queue.claim);
+
+        yield* rerun("cr2", 1, "nitpick", [7]);
+        const direct = reviewJob(yield* queue.claim);
+        assert.strictEqual(direct.payload.prNumber, 7);
+        assert.strictEqual(direct.payload.trigger, "requested");
+        yield* queue.complete(direct.id);
+
+        // A fork PR's run has no pull_requests; the stored run id finds it.
+        yield* db.insert(review).values({
+          repositoryId: 1,
+          prNumber: 62,
+          prTitle: "t",
+          prAuthor: "dev",
+          headSha: "h",
+          baseSha: "b",
+          checkRunId: 4343,
+        });
+        yield* rerun("cr3", 4343, "nitpick", []);
+        assert.strictEqual(reviewJob(yield* queue.claim).payload.prNumber, 62);
       }),
     );
   });

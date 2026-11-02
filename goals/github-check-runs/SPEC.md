@@ -99,19 +99,22 @@ Decision log.
 
 Seeded from the exploration's [`DECISIONS.md`](../../explorations/github-check-runs/DECISIONS.md).
 
-| Date       | Decision                                     | Reason                                   | How to reverse                      |
-| ---------- | -------------------------------------------- | ---------------------------------------- | ----------------------------------- |
-| 2026-11-02 | Check runs, not commit statuses              | GitHub App; neutral, skipped, re-run     | Swap driver calls                   |
-| 2026-11-02 | `failure` on a published finding >= `failOn` | Real gate teams can require              | Default `failOn: "never"`           |
-| 2026-11-02 | `neutral` on review error                    | Outage never blocks merges               | Change one mapping                  |
-| 2026-11-02 | `skipped` on skip reasons                    | Required checks do not hang              | Change one mapping                  |
-| 2026-11-02 | Carry forward on un-reviewed pushes          | A push must not clear a failing gate     | Post `skipped` instead              |
-| 2026-11-02 | Re-run via `check_run.rerequested` only      | Recover from `neutral` errors            | Drop the webhook branch             |
-| 2026-11-02 | No annotations                               | Inline comments already cover lines      | Add annotations to `updateCheckRun` |
-| 2026-11-02 | On by default, `checks.enabled` to disable   | Discoverable, removable                  | Flip default                        |
-| 2026-11-02 | Created in the worker at review start        | No GitHub writes in the web request path | Move creation                       |
-| 2026-11-02 | Fixed name `nitpick`                         | Stable required-check context            | Never; breaks branch protection     |
-| 2026-11-02 | Store `checkConclusion` on `review`          | History stays as shown                   | Down-migration drops the column     |
+| Date       | Decision                                                                                                  | Reason                                                                | How to reverse                      |
+| ---------- | --------------------------------------------------------------------------------------------------------- | --------------------------------------------------------------------- | ----------------------------------- |
+| 2026-11-02 | Check runs, not commit statuses                                                                           | GitHub App; neutral, skipped, re-run                                  | Swap driver calls                   |
+| 2026-11-02 | `failure` on a published finding >= `failOn`                                                              | Real gate teams can require                                           | Default `failOn: "never"`           |
+| 2026-11-02 | `neutral` on review error                                                                                 | Outage never blocks merges                                            | Change one mapping                  |
+| 2026-11-02 | `skipped` on skip reasons                                                                                 | Required checks do not hang                                           | Change one mapping                  |
+| 2026-11-02 | Carry forward on un-reviewed pushes                                                                       | A push must not clear a failing gate                                  | Post `skipped` instead              |
+| 2026-11-02 | Re-run via `check_run.rerequested` only                                                                   | Recover from `neutral` errors                                         | Drop the webhook branch             |
+| 2026-11-02 | No annotations                                                                                            | Inline comments already cover lines                                   | Add annotations to `updateCheckRun` |
+| 2026-11-02 | On by default, `checks.enabled` to disable                                                                | Discoverable, removable                                               | Flip default                        |
+| 2026-11-02 | Created in the worker at review start                                                                     | No GitHub writes in the web request path                              | Move creation                       |
+| 2026-11-02 | Fixed name `nitpick`                                                                                      | Stable required-check context                                         | Never; breaks branch protection     |
+| 2026-11-02 | Store `checkConclusion` on `review`                                                                       | History stays as shown                                                | Down-migration drops the column     |
+| 2026-11-02 | Reuse a run only when the row is still `running` (lapsed lease); any other restart opens a new run        | A completed run is not reopened; GitHub shows the newest run per name | Reopen the stored run instead       |
+| 2026-11-02 | No check for a disabled repo, a suspended install, a closed PR or a stale head                            | nitpick is off, cannot write, or a newer job owns the head            | Post `skipped` there too            |
+| 2026-11-02 | Check output builders live in `review/use-cases/src/Check.ts`; `severityRank` exported from `Findings.ts` | Pure, beside `selectFindings`                                         | Inline them                         |
 
 ## Exception ledger
 

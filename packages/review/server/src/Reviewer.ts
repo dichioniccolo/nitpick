@@ -2,8 +2,10 @@ import { randomBytes } from "node:crypto";
 import { Claude } from "@nitpick/anthropic";
 import { installation, repository } from "@nitpick/code-graph-tables";
 import {
+  type CheckRunState,
   describeFailure,
   GitHub,
+  type GitHubError,
   type PullRequest,
   type RepoRef,
   toRepoRef,
@@ -18,19 +20,26 @@ import {
 } from "@nitpick/review-domain";
 import { finding, learning, review, rule } from "@nitpick/review-tables";
 import {
+  carriedCheckOutput,
+  checkConclusion,
+  checkName,
   clampConfidence,
+  completedCheckOutput,
+  failedCheckOutput,
   fingerprintFromBody,
   type PlacedFinding,
   renderFinding,
   renderSummary,
   reviewPrompt,
   reviewSystem,
+  runningCheckOutput,
   sanitize,
   selectFindings,
+  skippedCheckOutput,
   skipReason,
   summaryMarker,
 } from "@nitpick/review-use-cases";
-import { and, desc, eq, isNotNull, lt, sql, or } from "drizzle-orm";
+import { and, desc, eq, inArray, isNotNull, lt, ne, sql, or } from "drizzle-orm";
 import * as Effect from "effect/Effect";
 import * as Exit from "effect/Exit";
 import * as S from "effect/Schema";
@@ -159,14 +168,122 @@ const toPlaced = (item: StoredFinding): PlacedFinding => ({
   fingerprint: item.fingerprint,
 });
 
+/** Check writes never fail a review: a missing Checks permission (403) or an outage only logs. */
+const quietly = <A>(write: Effect.Effect<A, GitHubError>): Effect.Effect<A | null> =>
+  write.pipe(
+    Effect.catchTag("GitHubError", (error) =>
+      Effect.as(
+        Effect.logWarning("check run write failed", error.operation, error.status ?? "no status"),
+        null,
+      ),
+    ),
+  );
+
+/**
+ * The check for a head nitpick does not review: `skipped` with the reason, or,
+ * for a push while updates are off, the stored conclusion of the last reviewed
+ * head, so a push cannot turn a failing check into a passing one.
+ */
+const postUnreviewed = Effect.fnUntraced(function* (
+  ref: RepoRef,
+  repositoryId: number,
+  pull: PullRequest,
+  reason: string | null,
+) {
+  const db = yield* Database;
+  const github = yield* GitHub;
+
+  const skipped = (why: string): CheckRunState => ({
+    status: "completed",
+    conclusion: "skipped",
+    ...skippedCheckOutput(why),
+  });
+
+  if (reason !== null) {
+    yield* quietly(github.createCheckRun(ref, checkName, pull.headSha, skipped(reason)));
+
+    return;
+  }
+
+  const [last] = yield* db
+    .select({ headSha: review.headSha, conclusion: review.checkConclusion })
+    .from(review)
+    .where(
+      and(
+        eq(review.repositoryId, repositoryId),
+        eq(review.prNumber, pull.number),
+        ne(review.headSha, pull.headSha),
+        isNotNull(review.checkConclusion),
+        isNotNull(review.finishedAt),
+      ),
+    )
+    .orderBy(desc(review.finishedAt))
+    .limit(1)
+    .pipe(Effect.orDie);
+
+  const run: CheckRunState =
+    last === undefined || last.conclusion === null
+      ? skipped("reviews on new pushes are off")
+      : {
+          status: "completed",
+          conclusion: last.conclusion,
+          ...carriedCheckOutput(last.headSha, last.conclusion),
+        };
+
+  yield* quietly(github.createCheckRun(ref, checkName, pull.headSha, run));
+});
+
 /** Fail reviews a dead worker left running. Longer than the job timeout and its retries. */
 export const sweepStuckReviews = Effect.gen(function* () {
   const db = yield* Database;
-  yield* db
+  const github = yield* GitHub;
+  const settings = yield* Settings;
+
+  const swept = yield* db
     .update(review)
-    .set({ status: "failed", error: "Stuck", finishedAt: sql`now()` })
+    .set({ status: "failed", error: "Stuck", checkConclusion: "neutral", finishedAt: sql`now()` })
     .where(and(eq(review.status, "running"), lt(review.startedAt, sql`now() - interval '2 hours'`)))
+    .returning({ id: review.id, repositoryId: review.repositoryId, checkRunId: review.checkRunId })
     .pipe(Effect.orDie);
+
+  const stranded = swept.flatMap(({ checkRunId, ...row }) =>
+    checkRunId === null ? [] : [{ ...row, checkRunId }],
+  );
+
+  if (stranded.length === 0) return;
+
+  const repos = yield* db
+    .select({
+      id: repository.id,
+      installationId: repository.installationId,
+      fullName: repository.fullName,
+    })
+    .from(repository)
+    .where(inArray(repository.id, [...new Set(stranded.map((row) => row.repositoryId))]))
+    .pipe(Effect.orDie);
+
+  const byId = new Map(repos.map((repo) => [repo.id, repo]));
+
+  // The run a dead worker left `in_progress` would otherwise hold a required check forever.
+  yield* Effect.forEach(
+    stranded,
+    ({ id, repositoryId, checkRunId }) => {
+      const repo = byId.get(repositoryId);
+
+      if (repo === undefined) return Effect.void;
+      const reviewUrl = `${settings.appUrl}/app/reviews/${id}`;
+
+      return quietly(
+        github.updateCheckRun(toRepoRef(repo.installationId, repo.fullName), checkRunId, {
+          status: "completed",
+          conclusion: "neutral",
+          ...failedCheckOutput(reviewUrl),
+          detailsUrl: reviewUrl,
+        }),
+      );
+    },
+    { concurrency: 5, discard: true },
+  );
 }).pipe(Effect.withSpan("review.sweep"));
 
 export const reviewPullRequest = Effect.fn("review.pull.run")(function* (payload: {
@@ -219,12 +336,19 @@ export const reviewPullRequest = Effect.fn("review.pull.run")(function* (payload
     if (reason !== null || (payload.trigger === "pushed" && !config.triggerOnUpdates)) {
       yield* Effect.logInfo("review skipped", reason ?? "updates are off");
 
+      if (config.checks.enabled) yield* postUnreviewed(ref, repo.id, pull, reason);
+
       return;
     }
   }
 
   const [existing] = yield* db
-    .select({ id: review.id, status: review.status, summary: review.summary })
+    .select({
+      id: review.id,
+      status: review.status,
+      summary: review.summary,
+      checkRunId: review.checkRunId,
+    })
     .from(review)
     .where(
       and(
@@ -242,11 +366,17 @@ export const reviewPullRequest = Effect.fn("review.pull.run")(function* (payload
   const resuming =
     existing !== undefined && existing.status !== "completed" && existing.summary !== null;
 
+  // A row still `running` was cut off mid-run (a lapsed lease); its check run is still live and is
+  // reused. Any other restart opens a new run, and GitHub shows the newest one.
+  const liveRun = existing?.status === "running" ? existing.checkRunId : null;
+
   const restart = {
     status: "running",
     error: null,
     finishedAt: null,
     startedAt: sql`now()`,
+    checkRunId: liveRun,
+    checkConclusion: null,
   } as const;
 
   const [row] = yield* db
@@ -268,6 +398,34 @@ export const reviewPullRequest = Effect.fn("review.pull.run")(function* (payload
 
   if (row === undefined) return;
   const reviewId = row.id;
+  const reviewUrl = `${settings.appUrl}/app/reviews/${reviewId}`;
+
+  const openCheckRun = Effect.gen(function* () {
+    const id = yield* quietly(
+      github.createCheckRun(ref, checkName, pull.headSha, {
+        status: "in_progress",
+        ...runningCheckOutput(reviewUrl),
+        detailsUrl: reviewUrl,
+        externalId: reviewId,
+      }),
+    );
+
+    if (id !== null)
+      yield* db
+        .update(review)
+        .set({ checkRunId: id })
+        .where(eq(review.id, reviewId))
+        .pipe(Effect.orDie);
+
+    return id;
+  });
+
+  const checkRunId = !config.checks.enabled ? null : (liveRun ?? (yield* openCheckRun));
+
+  const finishCheckRun = (run: CheckRunState) =>
+    checkRunId === null
+      ? Effect.void
+      : quietly(github.updateCheckRun(ref, checkRunId, { ...run, detailsUrl: reviewUrl }));
 
   /** Run the agent, then save its whole result at once. Nothing here touches the PR. */
   const analyse = Effect.gen(function* () {
@@ -465,13 +623,33 @@ export const reviewPullRequest = Effect.fn("review.pull.run")(function* (payload
         diagram: saved?.diagram ?? undefined,
         findings: stored.map(toPlaced),
         unplaced: stored.filter((item) => item.githubCommentId === null).map(toPlaced),
-        reviewUrl: `${settings.appUrl}/app/reviews/${reviewId}`,
+        reviewUrl,
       }),
     );
 
+    const conclusion = checkConclusion(stored, config.checks.failOn);
+
+    // Before the row turns `completed`: a crash in between leaves `running`, and the retry reuses this run.
+    yield* finishCheckRun({
+      status: "completed",
+      conclusion,
+      ...completedCheckOutput({
+        summary: saved?.summary ?? "",
+        confidence: saved?.confidence ?? 1,
+        findings: stored,
+        failOn: config.checks.failOn,
+        reviewUrl,
+      }),
+    });
+
     yield* db
       .update(review)
-      .set({ status: "completed", summaryCommentId, finishedAt: sql`now()` })
+      .set({
+        status: "completed",
+        summaryCommentId,
+        checkConclusion: conclusion,
+        finishedAt: sql`now()`,
+      })
       .where(eq(review.id, reviewId))
       .pipe(Effect.orDie);
   });
@@ -483,9 +661,23 @@ export const reviewPullRequest = Effect.fn("review.pull.run")(function* (payload
         ? Effect.void
         : db
             .update(review)
-            .set({ status: "failed", error: describeFailure(exit.cause), finishedAt: sql`now()` })
+            .set({
+              status: "failed",
+              error: describeFailure(exit.cause),
+              checkConclusion: "neutral",
+              finishedAt: sql`now()`,
+            })
             .where(eq(review.id, reviewId))
-            .pipe(Effect.orDie),
+            .pipe(
+              Effect.orDie,
+              Effect.andThen(
+                finishCheckRun({
+                  status: "completed",
+                  conclusion: "neutral",
+                  ...failedCheckOutput(reviewUrl),
+                }),
+              ),
+            ),
     ),
   );
 });

@@ -9,9 +9,9 @@ import {
   SyncInstallation,
   TrustedAssociations,
 } from "@nitpick/review-domain";
-import { webhookDelivery } from "@nitpick/review-tables";
-import { mentionOf } from "@nitpick/review-use-cases";
-import { eq } from "drizzle-orm";
+import { review, webhookDelivery } from "@nitpick/review-tables";
+import { checkName, mentionOf } from "@nitpick/review-use-cases";
+import { and, eq } from "drizzle-orm";
 import * as Effect from "effect/Effect";
 import * as Match from "effect/Match";
 import * as S from "effect/Schema";
@@ -58,6 +58,16 @@ const IssueCommentEvent = S.Struct({
   sender: S.Struct({ type: S.String }),
   issue: S.Struct({ number: S.Number, pull_request: S.optional(S.Unknown) }),
   comment: S.Struct({ id: S.Number, body: S.String, author_association: S.String }),
+});
+
+const CheckRunEvent = S.Struct({
+  action: S.String,
+  repository: S.Struct({ id: S.Number }),
+  check_run: S.Struct({
+    id: S.Number,
+    name: S.String,
+    pull_requests: S.Array(S.Struct({ number: S.Number })),
+  }),
 });
 
 const decode = <A, I>(schema: S.Codec<A, I>, payload: Json): Effect.Effect<A, S.SchemaError> =>
@@ -166,6 +176,35 @@ const jobsFor = Effect.fnUntraced(function* (event: string, payload: Json) {
           },
         ),
       ),
+    ),
+    // GitHub sends `rerequested` only to the App that made the run, and only someone who can write to
+    // the repository sees the Re-run button. A fork PR's run carries no `pull_requests`, so the run
+    // id is looked up first.
+    Match.when("check_run", () =>
+      Effect.gen(function* () {
+        const { action, repository: repo, check_run: run } = yield* decode(CheckRunEvent, payload);
+
+        if (action !== "rerequested" || run.name !== checkName) return none;
+
+        const [reviewed] = yield* db
+          .select({ prNumber: review.prNumber })
+          .from(review)
+          .where(and(eq(review.repositoryId, repo.id), eq(review.checkRunId, run.id)))
+          .limit(1);
+
+        const prNumber = reviewed?.prNumber ?? run.pull_requests[0]?.number;
+
+        return prNumber === undefined
+          ? none
+          : [
+              ReviewPullRequest.make({
+                repositoryId: repo.id,
+                prNumber,
+                headSha: "",
+                trigger: "requested",
+              }),
+            ];
+      }),
     ),
     Match.orElse(() => Effect.succeed(none)),
   );

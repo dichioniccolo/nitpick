@@ -52,6 +52,24 @@ export const Strictness = S.Literals(["strict", "balanced", "relaxed"]);
 
 export type Strictness = typeof Strictness.Type;
 
+/** The lowest severity that fails the check; `never` makes the check report only. */
+export const FailOn = S.Literals(["critical", "major", "minor", "never"]);
+
+export type FailOn = typeof FailOn.Type;
+
+/** What a `nitpick` check run ends with. Errors are `neutral`, so an outage never blocks a merge. */
+export const CheckConclusion = S.Literals(["success", "failure", "neutral", "skipped"]);
+
+export type CheckConclusion = typeof CheckConclusion.Type;
+
+/** The `checks` block of `.nitpick.json`. */
+export const ChecksConfig = S.Struct({
+  enabled: S.optionalKey(S.Boolean),
+  failOn: S.optionalKey(FailOn),
+});
+
+export type ChecksConfig = typeof ChecksConfig.Type;
+
 /** A bounded list, so a config cannot inflate every prompt or the glob work per file. */
 const cappedStrings = (maxItemLength: number) =>
   S.Array(S.String.check(S.isMaxLength(maxItemLength))).check(S.isMaxLength(50));
@@ -68,11 +86,16 @@ export const RepoConfig = S.Struct({
   rules: S.optionalKey(cappedStrings(2000)),
   maxFindings: S.optionalKey(S.Int.check(S.isBetween({ minimum: 1, maximum: 50 }))),
   diagram: S.optionalKey(S.Boolean),
+  checks: S.optionalKey(ChecksConfig),
 });
 
 export type RepoConfig = typeof RepoConfig.Type;
 
-export type ResolvedConfig = { readonly [K in keyof RepoConfig]-?: NonNullable<RepoConfig[K]> };
+export type ResolvedChecks = { readonly [K in keyof ChecksConfig]-?: NonNullable<ChecksConfig[K]> };
+
+export type ResolvedConfig = {
+  readonly [K in Exclude<keyof RepoConfig, "checks">]-?: NonNullable<RepoConfig[K]>;
+} & { readonly checks: ResolvedChecks };
 
 export const ResolvedConfig: ResolvedConfig = {
   strictness: "balanced",
@@ -85,11 +108,14 @@ export const ResolvedConfig: ResolvedConfig = {
   rules: [],
   maxFindings: 15,
   diagram: true,
+  checks: { enabled: true, failOn: "critical" },
 };
 
+/** Defaults under the file's values. `checks` merges by key, so `{ "failOn": "major" }` keeps it enabled. */
 export const resolveConfig = (config: RepoConfig): ResolvedConfig => ({
   ...ResolvedConfig,
   ...config,
+  checks: { ...ResolvedConfig.checks, ...config.checks },
 });
 
 /** Queue payloads. `kind` also names the job row. */

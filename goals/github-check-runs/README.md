@@ -29,11 +29,11 @@ follow the instructions in goals/github-check-runs/GOAL.md
 
 ## Current phase
 
-P0 Research. Next: read `SPEC.md`, then start P1 step 1 in `packages/review/use-cases`.
+P2 Verify. Implementation landed; next: the quality-review-fix-loop, then open the PR.
 
 ## Latest evidence
 
-Not started.
+Local: `bun run lint`, `bun run check` and `bun run test` (112 tests) pass on `feat/github-check-runs`.
 
 ## Notes
 

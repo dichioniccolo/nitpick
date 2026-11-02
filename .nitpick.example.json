@@ -8,5 +8,6 @@
   "skipLabels": ["no-review"],
   "rules": ["Database calls go through a repository class"],
   "maxFindings": 15,
-  "diagram": true
+  "diagram": true,
+  "checks": { "enabled": true, "failOn": "critical" }
 }

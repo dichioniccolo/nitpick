@@ -7,7 +7,8 @@ export interface PlacedFinding extends FindingDraft {
   readonly fingerprint: string;
 }
 
-const rank: Readonly<Record<Severity, number>> = { critical: 0, major: 1, minor: 2 };
+/** Worst first: a lower rank is more severe. */
+export const severityRank: Readonly<Record<Severity, number>> = { critical: 0, major: 1, minor: 2 };
 
 const floor: Readonly<Record<Strictness, Severity>> = {
   strict: "minor",
@@ -47,7 +48,10 @@ export const selectFindings = (
 
     if (isIgnored(draft.path, config.ignorePaths)) continue;
 
-    if (draft.category !== "rule" && rank[draft.severity] > rank[floor[config.strictness]])
+    if (
+      draft.category !== "rule" &&
+      severityRank[draft.severity] > severityRank[floor[config.strictness]]
+    )
       continue;
     const fingerprint = fingerprintOf(draft);
 
@@ -59,5 +63,7 @@ export const selectFindings = (
     kept.push({ ...rest, startLine: validStart ? startLine : undefined, fingerprint });
   }
 
-  return kept.toSorted((a, b) => rank[a.severity] - rank[b.severity]).slice(0, config.maxFindings);
+  return kept
+    .toSorted((a, b) => severityRank[a.severity] - severityRank[b.severity])
+    .slice(0, config.maxFindings);
 };

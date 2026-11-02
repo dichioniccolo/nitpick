@@ -13,6 +13,9 @@ It reproduces the behavior of hosted reviewers such as Greptile. It shares no co
   stranger cannot spend your API budget.
 - Learns from thumbs up and down on its comments, counting only users with write access, and from
   team rules in the dashboard.
+- Posts a `nitpick` check on each head: `failure` when a finding reaches `checks.failOn` (default
+  `critical`), `neutral` when the review itself fails, `skipped` when it is not reviewed, and the last
+  result again on a push it does not review. Require it in branch protection to gate merges.
 - Reads `.nitpick.json` from the base commit, so a PR cannot weaken its own review. See
   `.nitpick.example.json`.
 
@@ -37,9 +40,10 @@ Create one at `https://github.com/settings/apps/new`.
 
 - Webhook: active, URL `<APP_URL>/api/github/webhook`, with a secret.
 - Callback URL: `<APP_URL>/api/auth/callback/github`.
-- Repository permissions: Contents read, Metadata read, Pull requests read and write, Issues read and write.
+- Repository permissions: Contents read, Metadata read, Pull requests read and write, Issues read and write,
+  Checks read and write.
 - Account permissions: Email addresses read (optional).
-- Events: Pull request, Push, Issue comment. Every App also receives `installation` and
+- Events: Pull request, Push, Issue comment, Check run. Every App also receives `installation` and
   `installation_repositories` by default; they are not selectable.
 
 ## Local development
