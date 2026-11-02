@@ -9,5 +9,5 @@
   "rules": ["Database calls go through a repository class"],
   "maxFindings": 15,
   "diagram": true,
-  "checks": { "enabled": true, "failOn": "critical" }
+  "checks": { "enabled": true, "failOn": "critical", "minConfidence": 5 }
 }

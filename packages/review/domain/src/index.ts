@@ -74,6 +74,8 @@ export type CheckConclusion = typeof CheckConclusion.Type;
 export const ChecksConfig = S.Struct({
   enabled: S.optionalKey(S.Boolean),
   failOn: S.optionalKey(FailOn),
+  /** The check fails below this confidence score; 1 turns the rule off. */
+  minConfidence: S.optionalKey(S.Int.check(S.isBetween({ minimum: 1, maximum: 5 }))),
 });
 
 export type ChecksConfig = typeof ChecksConfig.Type;
@@ -116,7 +118,7 @@ export const ResolvedConfig: ResolvedConfig = {
   rules: [],
   maxFindings: 15,
   diagram: true,
-  checks: { enabled: true, failOn: "critical" },
+  checks: { enabled: true, failOn: "critical", minConfidence: 5 },
 };
 
 /** Defaults under the file's values. `checks` merges by key, so `{ "failOn": "major" }` keeps it enabled. */

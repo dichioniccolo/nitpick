@@ -27,6 +27,8 @@ WORKDIR /app
 ENV NODE_ENV=production NEXT_TELEMETRY_DISABLED=1 PORT=3000 HOSTNAME=0.0.0.0
 COPY --from=build /repo/apps/web/.next/standalone ./
 COPY --from=build /repo/apps/web/.next/static ./apps/web/.next/static
+# Standalone output leaves out public/, which serves the comment buttons at /badges.
+COPY --from=build /repo/apps/web/public ./apps/web/public
 USER 1001
 EXPOSE 3000
 # V8 sizes its heap from the machine, not the cgroup limit.

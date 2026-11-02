@@ -14,15 +14,28 @@ export interface CheckOutput {
   readonly summary: string;
 }
 
-/** `failure` when a published finding is at or above `failOn`, else `success`. */
+export interface CheckGate {
+  readonly failOn: FailOn;
+  /** 1 to 5; a confidence score below it fails the check. */
+  readonly minConfidence: number;
+}
+
+/** `failure` when the confidence score is below `minConfidence` or a published finding reaches `failOn`. */
 export const checkConclusion = (
   findings: ReadonlyArray<{ readonly severity: Severity }>,
-  failOn: FailOn,
-): "success" | "failure" =>
-  failOn !== "never" &&
-  findings.some((finding) => severityRank[finding.severity] <= severityRank[failOn])
-    ? "failure"
-    : "success";
+  confidence: number,
+  gate: CheckGate,
+): "success" | "failure" => {
+  const unsure = clampConfidence(confidence) < gate.minConfidence;
+
+  const { failOn } = gate;
+
+  const blocking =
+    failOn !== "never" &&
+    findings.some((finding) => severityRank[finding.severity] <= severityRank[failOn]);
+
+  return unsure || blocking ? "failure" : "success";
+};
 
 /** Cut at the limit with a note, so a long summary never makes GitHub reject the update. */
 export const truncateSummary = (summary: string): string => {
@@ -38,10 +51,19 @@ const countsOf = (findings: ReadonlyArray<{ readonly severity: Severity }>): str
   return counts.length > 0 ? counts.join(", ") : "No issues found";
 };
 
-const gateOf = (failOn: FailOn): string =>
-  failOn === "never"
-    ? "This check reports only; findings never fail it."
-    : `Fails on ${failOn === "critical" ? "critical findings" : `${failOn} findings or worse`}.`;
+const gateOf = ({ failOn, minConfidence }: CheckGate): string => {
+  const findings =
+    failOn === "never"
+      ? []
+      : [failOn === "critical" ? "critical findings" : `${failOn} findings or worse`];
+
+  const confidence = minConfidence > 1 ? [`a confidence score below ${minConfidence}/5`] : [];
+  const rules = [...findings, ...confidence];
+
+  return rules.length === 0
+    ? "This check reports only; it never fails."
+    : `Fails on ${rules.join(" or ")}.`;
+};
 
 export const runningCheckOutput = (reviewUrl: string): CheckOutput => ({
   title: "Reviewing",
@@ -52,7 +74,7 @@ export interface CompletedCheckInput {
   readonly summary: string;
   readonly confidence: number;
   readonly findings: ReadonlyArray<{ readonly severity: Severity }>;
-  readonly failOn: FailOn;
+  readonly gate: CheckGate;
   readonly reviewUrl: string;
 }
 
@@ -62,7 +84,7 @@ export const completedCheckOutput = (input: CompletedCheckInput): CheckOutput =>
   summary: truncateSummary(
     [
       sanitize(input.summary),
-      `**Confidence to merge: ${clampConfidence(input.confidence)}/5** · ${gateOf(input.failOn)}`,
+      `**Confidence Score: ${clampConfidence(input.confidence)}/5** · ${gateOf(input.gate)}`,
       `[Open in Nitpick](${input.reviewUrl})`,
     ].join("\n\n"),
   ),

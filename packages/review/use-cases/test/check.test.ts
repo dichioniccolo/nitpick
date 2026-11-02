@@ -17,17 +17,28 @@ const of = (...severities: ReadonlyArray<"critical" | "major" | "minor">) =>
 
 describe("checkConclusion", () => {
   it("fails at or above failOn and passes below it", () => {
-    assert.strictEqual(checkConclusion(of("major", "minor"), "critical"), "success");
-    assert.strictEqual(checkConclusion(of("critical"), "critical"), "failure");
-    assert.strictEqual(checkConclusion(of("major"), "major"), "failure");
-    assert.strictEqual(checkConclusion(of("critical"), "major"), "failure");
-    assert.strictEqual(checkConclusion(of("minor"), "major"), "success");
-    assert.strictEqual(checkConclusion(of("minor"), "minor"), "failure");
-    assert.strictEqual(checkConclusion([], "minor"), "success");
+    const at = (failOn: "critical" | "major" | "minor") => ({ failOn, minConfidence: 5 });
+    assert.strictEqual(checkConclusion(of("major", "minor"), 5, at("critical")), "success");
+    assert.strictEqual(checkConclusion(of("critical"), 5, at("critical")), "failure");
+    assert.strictEqual(checkConclusion(of("major"), 5, at("major")), "failure");
+    assert.strictEqual(checkConclusion(of("critical"), 5, at("major")), "failure");
+    assert.strictEqual(checkConclusion(of("minor"), 5, at("major")), "success");
+    assert.strictEqual(checkConclusion(of("minor"), 5, at("minor")), "failure");
+    assert.strictEqual(checkConclusion([], 5, at("minor")), "success");
   });
 
-  it("never fails with failOn never", () => {
-    assert.strictEqual(checkConclusion(of("critical", "critical"), "never"), "success");
+  it("fails below minConfidence whatever the findings, and 1 turns that off", () => {
+    const gate = { failOn: "critical", minConfidence: 5 } as const;
+    assert.strictEqual(checkConclusion([], 4, gate), "failure");
+    assert.strictEqual(checkConclusion([], 5, gate), "success");
+    assert.strictEqual(checkConclusion([], 4.6, gate), "success");
+    assert.strictEqual(checkConclusion([], 3, { ...gate, minConfidence: 3 }), "success");
+    assert.strictEqual(checkConclusion([], 1, { failOn: "never", minConfidence: 1 }), "success");
+  });
+
+  it("never fails on findings with failOn never", () => {
+    const gate = { failOn: "never", minConfidence: 5 } as const;
+    assert.strictEqual(checkConclusion(of("critical", "critical"), 5, gate), "success");
   });
 });
 
@@ -37,14 +48,17 @@ describe("check output", () => {
       summary: "cc @octocat",
       confidence: 9,
       findings: of("critical", "minor", "minor"),
-      failOn: "major",
+      gate: { failOn: "major", minConfidence: 5 },
       reviewUrl: "https://nitpick.test/app/reviews/1",
     });
 
     assert.strictEqual(output.title, "1 critical, 2 minor");
     assert.include(output.summary, "@​octocat");
     assert.include(output.summary, "5/5");
-    assert.include(output.summary, "major findings or worse");
+    assert.include(
+      output.summary,
+      "Fails on major findings or worse or a confidence score below 5/5.",
+    );
     assert.include(output.summary, "(https://nitpick.test/app/reviews/1)");
   });
 
@@ -53,12 +67,12 @@ describe("check output", () => {
       summary: "ok",
       confidence: 5,
       findings: [],
-      failOn: "never",
+      gate: { failOn: "never", minConfidence: 1 },
       reviewUrl: "u",
     });
 
     assert.strictEqual(output.title, "No issues found");
-    assert.include(output.summary, "reports only");
+    assert.include(output.summary, "reports only; it never fails");
   });
 
   it("truncates under GitHub's limit and leaves short text alone", () => {
@@ -84,11 +98,19 @@ describe("checks config", () => {
       assert.deepStrictEqual(resolveConfig(yield* decode("{}")).checks, {
         enabled: true,
         failOn: "critical",
+        minConfidence: 5,
       });
       assert.deepStrictEqual(resolveConfig(yield* decode('{"checks":{"failOn":"major"}}')).checks, {
         enabled: true,
         failOn: "major",
+        minConfidence: 5,
       });
+      assert.strictEqual(
+        resolveConfig(yield* decode('{"checks":{"minConfidence":3}}')).checks.minConfidence,
+        3,
+      );
+      assert.isTrue(Exit.isFailure(yield* Effect.exit(decode('{"checks":{"minConfidence":6}}'))));
+      assert.isTrue(Exit.isFailure(yield* Effect.exit(decode('{"checks":{"minConfidence":4.5}}'))));
       const bad = yield* Effect.exit(decode('{"checks":{"failOn":"blocker"}}'));
       assert.isTrue(Exit.isFailure(bad));
     }),
