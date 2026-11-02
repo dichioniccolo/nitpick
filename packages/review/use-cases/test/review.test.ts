@@ -37,6 +37,18 @@ const patch = `@@ -10,3 +10,4 @@ export const a = 1;
 
 const files: ReadonlyArray<PullFile> = [{ path: "src/a.ts", status: "modified", patch }];
 
+/** Everything a summary needs apart from the parts a test varies. */
+const summaryBase = {
+  impact: null,
+  verdict: null,
+  changes: [],
+  reviewUrl: "https://x/r/1",
+  retriggerUrl: "https://x/r/1/retrigger",
+  badgesUrl: "https://x/badges",
+  reviewCount: 1,
+  commit: { sha: "abcdef1234567", url: "https://github.com/acme/api/commit/abcdef1234567" },
+} as const;
+
 const draft = (over: Partial<FindingDraft> = {}): FindingDraft => ({
   path: "src/a.ts",
   line: 11,
@@ -309,18 +321,48 @@ describe("rendering", () => {
     if (placed === undefined) throw new Error("expected a finding");
 
     const body = renderSummary({
+      ...summaryBase,
+      impact: "high",
+      verdict: "Safe once the cc @octocat note lands.",
       summary: "ok",
+      changes: ["Adds a driver", "Moves\n\n## the slice"],
       confidence: 9,
       diagram: "```mermaid\nsequenceDiagram\n```",
       findings: [placed],
       unplaced: [placed],
-      reviewUrl: "https://x/r/1",
+      reviewCount: 3,
     });
 
-    assert.include(body, "5/5");
+    assert.include(body, "## Confidence Score: 5/5");
+    assert.include(body, "**[High impact]** Safe once the cc @\u200Boctocat note lands.");
+    assert.include(body, "### Summary\n\nok\n\n- Adds a driver\n- Moves ## the slice");
     assert.include(body, "1 major");
     assert.include(body, "src/a.ts:11");
+    assert.include(body, "### Diagram\n\n```mermaid");
+    assert.notInclude(body, "<details>");
     assert.lengthOf(body.match(/```mermaid/g) ?? [], 1);
+    assert.include(
+      body,
+      '<a href="https://x/r/1/retrigger"><img align="right" height="28" alt="Retrigger" src="https://x/badges/retrigger.svg"></a>',
+    );
+    assert.include(body, 'alt="View in Nitpick" src="https://x/badges/view.svg"');
+    assert.isBelow(body.indexOf("Retrigger"), body.indexOf("View in Nitpick"));
+    assert.include(body, "Reviews (3)");
+    assert.include(body, '<a href="https://github.com/acme/api/commit/abcdef1234567">abcdef1</a>');
+  });
+
+  it("leaves out the impact line for a review saved before it existed", () => {
+    const body = renderSummary({
+      ...summaryBase,
+      summary: "ok",
+      confidence: 4,
+      diagram: undefined,
+      findings: [],
+      unplaced: [],
+    });
+
+    assert.notInclude(body, "impact]");
+    assert.include(body, "no issues found");
   });
 });
 
@@ -331,12 +373,12 @@ describe("summary hostile input", () => {
     if (placed === undefined) throw new Error("expected a finding");
 
     return renderSummary({
+      ...summaryBase,
       summary: "ok",
       confidence: 3,
       diagram: over.diagram,
       findings: [],
       unplaced: over.path === undefined ? [] : [{ ...placed, path: over.path }],
-      reviewUrl: "https://x/r/1",
     });
   };
 

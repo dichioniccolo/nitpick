@@ -282,7 +282,10 @@ const fakeClaude = {
               id: "t4",
               name: "submit_review",
               input: {
+                impact: "medium",
+                verdict: "Merge after fixing the missing import.",
                 summary: "Adds audit. cc @octocat",
+                changes: ["Calls audit on every charge"],
                 confidence: 3,
                 findings: [
                   {
@@ -1105,6 +1108,13 @@ describe("check runs", () => {
         assert.strictEqual(latest(700)?.title, "1 major");
         assert.strictEqual(latest(700)?.detailsUrl, `https://nitpick.test/app/reviews/${row?.id}`);
         assert.strictEqual(opening?.run.externalId, "50");
+        const comment = state.summaries.at(-1) ?? "";
+        assert.include(comment, "## Confidence Score: 3/5");
+        assert.include(comment, "**[Medium impact]** Merge after fixing the missing import.");
+        assert.include(comment, "- Calls audit on every charge");
+        assert.include(comment, `https://nitpick.test/app/reviews/${row?.id}/retrigger`);
+        assert.include(comment, "https://nitpick.test/badges/view.svg");
+        assert.include(comment, "Reviews (1)");
         assert.lengthOf(creates(), 1);
       }),
     );

@@ -38,9 +38,17 @@ export const FindingDraft = S.Struct({
 
 export type FindingDraft = typeof FindingDraft.Type;
 
+/** How much the change matters, shown as `[High impact]` before the verdict. */
+export const Impact = S.Literals(["low", "medium", "high"]);
+
+export type Impact = typeof Impact.Type;
+
 /** The `submit_review` tool's input. */
 export const ReviewDraft = S.Struct({
+  impact: Impact,
+  verdict: S.String,
   summary: S.String,
+  changes: S.Array(S.String),
   confidence: S.Number,
   diagram: S.optional(S.String),
   findings: S.Array(FindingDraft),

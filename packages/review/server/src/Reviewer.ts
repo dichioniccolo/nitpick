@@ -39,7 +39,7 @@ import {
   skipReason,
   summaryMarker,
 } from "@nitpick/review-use-cases";
-import { and, desc, eq, inArray, isNotNull, lt, sql, or } from "drizzle-orm";
+import { and, count, desc, eq, inArray, isNotNull, lt, ne, sql, or } from "drizzle-orm";
 import * as Duration from "effect/Duration";
 import * as Effect from "effect/Effect";
 import * as Exit from "effect/Exit";
@@ -76,9 +76,24 @@ const finishTool = {
     eager_input_streaming: true,
     input_schema: objectSchema(
       {
+        impact: {
+          type: "string",
+          enum: ["low", "medium", "high"],
+          description: "How much this change matters to the system, whatever its quality.",
+        },
+        verdict: {
+          type: "string",
+          description: "One sentence: your call on merging and the reason. Plain text.",
+        },
         summary: {
           type: "string",
-          description: "What the PR does and your verdict, in Markdown, under 200 words.",
+          description: "One or two sentences on what the PR does, in Markdown.",
+        },
+        changes: {
+          type: "array",
+          items: { type: "string" },
+          description:
+            "Three to eight bullets, one notable change each, one line, no leading dash.",
         },
         confidence: { type: "integer", description: "1 to 5." },
         diagram: {
@@ -110,7 +125,7 @@ const finishTool = {
           },
         },
       },
-      ["summary", "confidence", "findings"],
+      ["impact", "verdict", "summary", "changes", "confidence", "findings"],
     ),
   },
   decode: decoder(ReviewDraft),
@@ -404,7 +419,17 @@ export const reviewPullRequest = Effect.fn("review.pull.run")(function* (payload
     })
     .onConflictDoUpdate({
       target: [review.repositoryId, review.prNumber, review.headSha],
-      set: resuming ? restart : { ...restart, summary: null, confidence: null, diagram: null },
+      set: resuming
+        ? restart
+        : {
+            ...restart,
+            impact: null,
+            verdict: null,
+            summary: null,
+            changes: null,
+            confidence: null,
+            diagram: null,
+          },
     })
     .returning({ id: review.id })
     .pipe(Effect.orDie);
@@ -514,7 +539,10 @@ export const reviewPullRequest = Effect.fn("review.pull.run")(function* (payload
           yield* tx
             .update(review)
             .set({
+              impact: result.value.impact,
+              verdict: sanitize(result.value.verdict),
               summary: sanitize(result.value.summary),
+              changes: result.value.changes.slice(0, 8).map(sanitize),
               confidence: clampConfidence(result.value.confidence),
               diagram: config.diagram ? (result.value.diagram ?? null) : null,
               model: claude.model,
@@ -619,7 +647,10 @@ export const reviewPullRequest = Effect.fn("review.pull.run")(function* (payload
 
     const [saved] = yield* db
       .select({
+        impact: review.impact,
+        verdict: review.verdict,
         summary: review.summary,
+        changes: review.changes,
         confidence: review.confidence,
         diagram: review.diagram,
       })
@@ -627,17 +658,41 @@ export const reviewPullRequest = Effect.fn("review.pull.run")(function* (payload
       .where(eq(review.id, reviewId))
       .pipe(Effect.orDie);
 
+    // Earlier completed reviews on this PR, plus this one.
+    const [earlier] = yield* db
+      .select({ total: count() })
+      .from(review)
+      .where(
+        and(
+          eq(review.repositoryId, repo.id),
+          eq(review.prNumber, pull.number),
+          eq(review.status, "completed"),
+          ne(review.id, reviewId),
+        ),
+      )
+      .pipe(Effect.orDie);
+
     const summaryCommentId = yield* github.upsertComment(
       ref,
       pull.number,
       yield* summaryComment,
       renderSummary({
+        impact: saved?.impact ?? null,
+        verdict: saved?.verdict ?? null,
+        changes: saved?.changes ?? [],
         summary: saved?.summary ?? "",
         confidence: saved?.confidence ?? 1,
         diagram: saved?.diagram ?? undefined,
         findings: stored.map(toPlaced),
         unplaced: stored.filter((item) => item.githubCommentId === null).map(toPlaced),
         reviewUrl,
+        retriggerUrl: `${reviewUrl}/retrigger`,
+        badgesUrl: `${settings.appUrl}/badges`,
+        reviewCount: (earlier?.total ?? 0) + 1,
+        commit: {
+          sha: pull.headSha,
+          url: `https://github.com/${repo.fullName}/commit/${pull.headSha}`,
+        },
       }),
     );
 
