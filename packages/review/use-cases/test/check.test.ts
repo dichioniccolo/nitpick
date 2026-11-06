@@ -12,12 +12,12 @@ import {
   truncateSummary,
 } from "../src/index.ts";
 
-const of = (...severities: ReadonlyArray<"P0" | "P1" | "P2">) =>
+const of = (...severities: ReadonlyArray<"P0" | "P1" | "P2" | "P3">) =>
   severities.map((severity) => ({ severity }));
 
 describe("checkConclusion", () => {
   it("fails at or above failOn and passes below it", () => {
-    const at = (failOn: "P0" | "P1" | "P2") => ({ failOn, minConfidence: 5 });
+    const at = (failOn: "P0" | "P1" | "P2" | "P3") => ({ failOn, minConfidence: 5 });
     assert.strictEqual(checkConclusion(of("P1", "P2"), 5, at("P0")), "success");
     assert.strictEqual(checkConclusion(of("P0"), 5, at("P0")), "failure");
     assert.strictEqual(checkConclusion(of("P1"), 5, at("P1")), "failure");
@@ -25,6 +25,8 @@ describe("checkConclusion", () => {
     assert.strictEqual(checkConclusion(of("P2"), 5, at("P1")), "success");
     assert.strictEqual(checkConclusion(of("P2"), 5, at("P2")), "failure");
     assert.strictEqual(checkConclusion([], 5, at("P2")), "success");
+    assert.strictEqual(checkConclusion(of("P3"), 5, at("P2")), "success");
+    assert.strictEqual(checkConclusion(of("P3"), 5, at("P3")), "failure");
   });
 
   it("fails below minConfidence whatever the findings, and 1 turns that off", () => {

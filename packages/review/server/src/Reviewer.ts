@@ -151,15 +151,16 @@ const quietly = <A>(write: Effect.Effect<A, GitHubError>): Effect.Effect<A | nul
  * The check for a head nitpick does not review: `skipped` with `reason` when a
  * skip rule applies. Otherwise, for a push while updates are off or an opened
  * PR while `triggerOnOpen` is off, the stored conclusion of the last reviewed
- * head, so neither a push nor a reopen can turn a failing check into a passing
- * one; `idle` is the skip reason when no head was reviewed yet.
+ * head of this PR, or of this same commit on any PR in the repository, so no
+ * push, reopen or new PR on a failed commit can turn its check into a pass.
+ * With no reviewed head to carry it posts nothing: a required check then stays
+ * pending until someone asks for a review, since `skipped` would pass it.
  */
 const postUnreviewed = Effect.fnUntraced(function* (
   ref: RepoRef,
   repositoryId: number,
   pull: PullRequest,
   reason: string | null,
-  idle: string,
 ) {
   const db = yield* Database;
   const github = yield* GitHub;
@@ -186,8 +187,9 @@ const postUnreviewed = Effect.fnUntraced(function* (
     .where(
       and(
         eq(review.repositoryId, repositoryId),
-        eq(review.prNumber, pull.number),
-        // This head's own row counts too: a force-push back to a reviewed head keeps its result.
+        // This head's own row counts too, from any PR: check runs belong to the commit, so a new
+        // PR on a failed commit must not post a fresh run over that failure.
+        or(eq(review.prNumber, pull.number), eq(review.headSha, pull.headSha)),
         isNotNull(review.checkConclusion),
         isNotNull(review.finishedAt),
       ),
@@ -197,17 +199,16 @@ const postUnreviewed = Effect.fnUntraced(function* (
     .limit(1)
     .pipe(Effect.orDie);
 
-  const run: CheckRunState =
-    last === undefined || last.conclusion === null
-      ? skipped(idle)
-      : {
-          status: "completed",
-          conclusion: last.conclusion,
-          ...carriedCheckOutput(last.headSha, last.conclusion),
-          externalId,
-        };
+  if (last === undefined || last.conclusion === null) return;
 
-  yield* quietly(github.createCheckRun(ref, checkName, pull.headSha, run));
+  yield* quietly(
+    github.createCheckRun(ref, checkName, pull.headSha, {
+      status: "completed",
+      conclusion: last.conclusion,
+      ...carriedCheckOutput(last.headSha, last.conclusion),
+      externalId,
+    }),
+  );
 });
 
 /** Fail reviews a dead worker left running. Longer than the job timeout and its retries. */
@@ -310,10 +311,10 @@ export const reviewPullRequest = Effect.fn("review.pull.run")(function* (payload
       config,
     );
 
-    // Reviews run when asked unless the repo opts in; the check's Re-run asks for one.
+    // Reviews run on a mention unless the repo opts in to opens or pushes.
     const idle =
       payload.trigger === "opened" && !config.triggerOnOpen
-        ? `reviews run on \`@${settings.appSlug} review\``
+        ? "not requested; reviews run on a mention"
         : payload.trigger === "pushed" && !config.triggerOnUpdates
           ? "reviews on new pushes are off"
           : null;
@@ -321,8 +322,7 @@ export const reviewPullRequest = Effect.fn("review.pull.run")(function* (payload
     if (reason !== null || idle !== null) {
       yield* Effect.logInfo("review skipped", reason ?? idle);
 
-      if (config.checks.enabled)
-        yield* postUnreviewed(ref, repo.id, pull, reason, idle ?? "a skip rule applies");
+      if (config.checks.enabled) yield* postUnreviewed(ref, repo.id, pull, reason);
 
       return;
     }
@@ -489,7 +489,10 @@ export const reviewPullRequest = Effect.fn("review.pull.run")(function* (payload
         dismissedFindings: previous.filter(isDismissed).map(describeFinding),
       },
       tools,
-      randomBytes(16).toString("hex"),
+      {
+        specialists: randomBytes(16).toString("hex"),
+        verifier: randomBytes(16).toString("hex"),
+      },
     );
 
     const selected = selectFindings(

@@ -1,4 +1,4 @@
-import type { Impact, Severity } from "@nitpick/review-domain";
+import { type Impact, Severity } from "@nitpick/review-domain";
 import * as Match from "effect/Match";
 
 import type { PlacedFinding } from "./Findings.ts";
@@ -210,7 +210,7 @@ const bullet = (text: string): string => `- ${sanitize(text).replace(/\s*[\r\n]+
 export const severityCounts = (
   findings: ReadonlyArray<{ readonly severity: Severity }>,
 ): ReadonlyArray<string> =>
-  (["P0", "P1", "P2", "P3"] as const).flatMap((severity) => {
+  Severity.literals.flatMap((severity) => {
     const count = findings.filter((finding) => finding.severity === severity).length;
 
     return count > 0 ? [`${count} ${severity}`] : [];

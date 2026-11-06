@@ -156,16 +156,26 @@ export const reviewPrompt = (context: ReviewContext, nonce: string): string =>
     "Past findings listed in that block are feedback from earlier reviews: raise nothing like the noise list, and report an already raised finding again only while this head still has it. Review this pull request in your focus and finish by calling submit_findings.",
   ].join("\n\n");
 
+/**
+ * Candidate text is model output built from PR content. The verifier's nonce is its own, but tags
+ * of the untrusted form still go, so a specialist steered by the PR cannot even try to close one.
+ */
+const untrustedTag = /<\/?\s*untrusted[^>]*>/gi;
+
+const inert = (text: string): string => text.replace(untrustedTag, "[tag removed]");
+
 /** A candidate as the verifier sees it, numbered so its verdict can name it. */
 const describeCandidate = (finding: FindingDraft, id: number): string =>
   [
-    `### Candidate ${id}: [${finding.severity}] ${finding.category}: ${finding.title}`,
-    `Location: ${finding.path}:${finding.startLine === undefined ? "" : `${finding.startLine}-`}${finding.line}`,
+    `### Candidate ${id}: [${finding.severity}] ${finding.category}: ${inert(finding.title)}`,
+    `Location: ${inert(finding.path)}:${finding.startLine === undefined ? "" : `${finding.startLine}-`}${finding.line}`,
     `Reviewer confidence: ${finding.confidence}`,
-    `Problem: ${finding.body}`,
-    `Scenario: ${finding.scenario}`,
-    `Evidence: ${finding.evidence}`,
-    ...(finding.suggestion === undefined ? [] : [`Suggested replacement:\n${finding.suggestion}`]),
+    `Problem: ${inert(finding.body)}`,
+    `Scenario: ${inert(finding.scenario)}`,
+    `Evidence: ${inert(finding.evidence)}`,
+    ...(finding.suggestion === undefined
+      ? []
+      : [`Suggested replacement:\n${inert(finding.suggestion)}`]),
   ].join("\n");
 
 /** The verifier's prompt: the same PR block, then the candidates, all inside the untrusted tag. */

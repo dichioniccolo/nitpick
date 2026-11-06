@@ -16,12 +16,18 @@ import {
 } from "@nitpick/github";
 import { Database } from "@nitpick/postgres";
 import type { Json } from "@nitpick/review-domain";
-import { IndexRepository, ReviewPullRequest, SyncFeedback } from "@nitpick/review-domain";
+import {
+  IndexRepository,
+  ReviewPullRequest,
+  Specialist,
+  SyncFeedback,
+} from "@nitpick/review-domain";
 import { layerMigrated, repositoryMigrations } from "@nitpick/postgres/test";
 import { finding, job, learning, review } from "@nitpick/review-tables";
 import { specialistSystem, verifierSystem } from "@nitpick/review-use-cases";
 import { TreeSitter } from "@nitpick/tree-sitter";
 import { eq, sql } from "drizzle-orm";
+import * as Cause from "effect/Cause";
 import * as Deferred from "effect/Deferred";
 import * as Effect from "effect/Effect";
 import * as Exit from "effect/Exit";
@@ -68,8 +74,10 @@ interface State {
   severity: "P0" | "P1" | "P2" | "P3";
   /** What the verifier decides for every candidate. */
   verify: "confirmed" | "rejected";
+  /** Fail the verifier's turn. */
+  failVerifier: boolean;
   /** Fail the specialists apart from logic, or all of them. */
-  failSpecialists: "none" | "others" | "all";
+  failSpecialists: "none" | "others" | "all" | "mixed";
   /** Write `triggerOnOpen: true` when no test config is set, so an opened PR reviews. */
   triggerOnOpen: boolean;
   /** The head fixed the finding, so the model stops reporting it. */
@@ -123,6 +131,7 @@ const initial = (): State => ({
   tree: [billing, { name: "acme-api-base1/node_modules/x/index.js", data: "function hidden() {}" }],
   severity: "P1",
   verify: "confirmed",
+  failVerifier: false,
   failSpecialists: "none",
   triggerOnOpen: true,
   fixed: false,
@@ -297,7 +306,11 @@ const specialistTurn = (role: Role, turn: number) => {
   // Missing `findings`: the loop must return the error and let the model retry.
   if (turn === 1) return submit("t3", "submit_findings", { summary: "x" });
 
-  const evidence = { scenario: "Any charge.", evidence: "src/billing.ts:2", confidence: "high" };
+  const evidence = {
+    scenario: "Any charge. cc @octocat",
+    evidence: "src/billing.ts:2",
+    confidence: "high",
+  };
 
   return submit("t4", "submit_findings", {
     findings: [
@@ -354,13 +367,22 @@ const fakeClaude = {
         return Deferred.succeed(state.hang, undefined).pipe(Effect.andThen(Effect.never));
       const role = roleOf(request);
 
-      if (role === "verifier") return verifierTurn(request);
+      if (role === "verifier")
+        return state.failVerifier
+          ? Effect.fail(new ClaudeError({ status: 400, retryable: false, cause: null }))
+          : verifierTurn(request);
 
       if (
         state.failSpecialists === "all" ||
         (state.failSpecialists === "others" && role === "other")
       )
         return Effect.fail(new ClaudeError({ status: 400, retryable: false, cause: null }));
+
+      // Logic runs out of tokens, a permanent AgentError; the rest are rate limited.
+      if (state.failSpecialists === "mixed")
+        return role === "logic"
+          ? Effect.succeed(message([], "max_tokens"))
+          : Effect.fail(new ClaudeError({ status: 429, retryable: true, cause: null }));
 
       return specialistTurn(
         role,
@@ -467,6 +489,11 @@ describe("review flow", () => {
         assert.include(state.summaries[0] ?? "", "@\u200Boctocat");
         assert.notMatch(state.summaries[0] ?? "", /@octocat\b/);
         assert.strictEqual(state.requests.length, perReview);
+        // Each specialist ran once, under its own prompt, and nothing else did.
+        assert.deepStrictEqual(
+          new Set(state.requests.map((request) => request.system)),
+          new Set([...Specialist.literals.map((key) => specialistSystem[key]), verifierSystem]),
+        );
         const logic = turnsOf("logic");
         const toolResults = JSON.stringify(logic[1]?.messages.at(-1));
         assert.include(toolResults, "refund");
@@ -1357,9 +1384,8 @@ describe("check runs", () => {
         yield* fresh;
         state.triggerOnOpen = false;
         yield* reviewPullRequest(opened(80));
-        const [skip] = creates();
-        assert.strictEqual(skip?.run.conclusion, "skipped");
-        assert.include(skip?.run.summary ?? "", "nitpick-bot review");
+        // No check at all: `skipped` would pass a required check on a PR nobody reviewed.
+        assert.lengthOf(creates(), 0);
         assert.lengthOf(yield* reviewRow(80), 0);
         assert.lengthOf(state.requests, 0);
 
@@ -1367,13 +1393,33 @@ describe("check runs", () => {
         yield* reviewPullRequest({ ...opened(80), trigger: "requested" });
         assert.strictEqual((yield* reviewRow(80))[0]?.status, "completed");
         assert.lengthOf(state.requests, perReview);
-        assert.strictEqual(latest(701)?.conclusion, "failure");
+        assert.strictEqual(latest(700)?.conclusion, "failure");
 
         // Reopening a failing PR carries the failure; it never posts a passing skip over it.
         yield* reviewPullRequest(opened(80));
         assert.strictEqual(creates().at(-1)?.run.conclusion, "failure");
         assert.include(creates().at(-1)?.run.title ?? "", "Carried from head1");
         assert.lengthOf(state.requests, perReview);
+
+        // A new PR on the same failed commit carries the failure too, whatever its number.
+        yield* reviewPullRequest(opened(85));
+        assert.strictEqual(creates().at(-1)?.run.conclusion, "failure");
+        assert.strictEqual(creates().at(-1)?.run.externalId, "85");
+        assert.lengthOf(state.requests, perReview);
+      }),
+    );
+
+    it.effect("posts nothing when the verifier fails", () =>
+      Effect.gen(function* () {
+        yield* fresh;
+        state.failVerifier = true;
+        yield* Effect.exit(reviewPullRequest(opened(86)));
+        const [row] = yield* reviewRow(86);
+        assert.strictEqual(row?.status, "failed");
+        assert.strictEqual(row?.checkConclusion, "neutral");
+        assert.lengthOf(yield* findingRows(86), 0);
+        assert.lengthOf(state.comments, 0);
+        assert.lengthOf(state.summaries, 0);
       }),
     );
 
@@ -1397,7 +1443,8 @@ describe("check runs", () => {
         yield* reviewPullRequest(opened(82));
         const [saved] = yield* findingRows(82);
         assert.strictEqual(saved?.severity, "P2");
-        assert.strictEqual(saved?.scenario, "Any charge.");
+        // Model text is sanitized before it is stored, as everything bound for GitHub is.
+        assert.strictEqual(saved?.scenario, "Any charge. cc @\u200Boctocat");
         assert.strictEqual(saved?.evidence, "src/billing.ts:2");
         const [row] = yield* reviewRow(82);
         assert.strictEqual(row?.confidence, 4);
@@ -1422,6 +1469,17 @@ describe("check runs", () => {
         assert.strictEqual(failed?.status, "failed");
         assert.strictEqual(failed?.checkConclusion, "neutral");
         assert.lengthOf(turnsOf("verifier"), 1);
+
+        // The retryable failure wins, so the job retries instead of being dropped as permanent.
+        state.failSpecialists = "mixed";
+        const exit = yield* Effect.exit(reviewPullRequest(opened(87)));
+        assert.isTrue(Exit.isFailure(exit));
+
+        if (Exit.isFailure(exit)) {
+          const error = Cause.squash(exit.cause);
+          assert.isTrue(Predicate.isTagged(error, "ClaudeError"));
+          assert.isTrue(error instanceof ClaudeError && error.retryable);
+        }
       }),
     );
 
@@ -1472,8 +1530,16 @@ describe("check runs", () => {
         assert.strictEqual(creates().at(-1)?.run.conclusion, "failure");
         state.head = "head2";
 
+        // Another PR on head2 carries head2's result from PR 57: check runs belong to the commit.
+        const before = creates().length;
         yield* reviewPullRequest({ ...opened(58, "head2"), trigger: "pushed" });
-        assert.strictEqual(creates().at(-1)?.run.conclusion, "skipped");
+        assert.strictEqual(creates().at(-1)?.run.conclusion, "failure");
+        assert.include(creates().at(-1)?.run.title ?? "", "Carried from head2");
+
+        // A commit nobody reviewed gets no check, so a required one stays pending.
+        state.head = "head9";
+        yield* reviewPullRequest({ ...opened(59, "head9"), trigger: "pushed" });
+        assert.lengthOf(creates(), before + 1);
       }),
     );
 

@@ -13,7 +13,12 @@ import * as Predicate from "effect/Predicate";
 import * as Result from "effect/Result";
 import * as S from "effect/Schema";
 
-export class AgentError extends Data.TaggedError("AgentError")<{ readonly reason: string }> {}
+/** The run ended without a result. The tokens it spent until then still count toward the review. */
+export class AgentError extends Data.TaggedError("AgentError")<{
+  readonly reason: string;
+  readonly inputTokens: number;
+  readonly outputTokens: number;
+}> {}
 
 /** A read-only tool. Handlers close over one repository, so the model cannot pick another. */
 export interface AgentTool {
@@ -109,11 +114,13 @@ export const runAgent = Effect.fn("review.agent.run")(function* <A>(run: AgentRu
     if (response.stop_reason === "refusal") {
       return yield* new AgentError({
         reason: `refused: ${response.stop_details?.category ?? "unspecified"}`,
+        inputTokens,
+        outputTokens,
       });
     }
 
     if (response.stop_reason === "max_tokens")
-      return yield* new AgentError({ reason: "hit max_tokens" });
+      return yield* new AgentError({ reason: "hit max_tokens", inputTokens, outputTokens });
 
     messages.push({ role: "assistant", content: response.content });
 
@@ -184,5 +191,9 @@ export const runAgent = Effect.fn("review.agent.run")(function* <A>(run: AgentRu
     messages.push({ role: "user", content: [...results, ...reminder] });
   }
 
-  return yield* new AgentError({ reason: `no ${finishName} call in ${run.maxTurns} turns` });
+  return yield* new AgentError({
+    reason: `no ${finishName} call in ${run.maxTurns} turns`,
+    inputTokens,
+    outputTokens,
+  });
 }) as <A>(run: AgentRun<A>) => Effect.Effect<AgentResult<A>, AgentError | ClaudeError, Claude>;

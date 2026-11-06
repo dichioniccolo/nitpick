@@ -26,8 +26,11 @@ the Claude driver or the tree-sitter wasm.
 2. The worker claims from the Postgres `job` table with `FOR UPDATE SKIP LOCKED`. A heartbeat renews a
    3 minute lease, so a dead worker's job returns to the queue. Three attempts with backoff.
 3. Indexing downloads the tarball, skips unchanged files by hash, and stores files, symbols and references.
-4. A review runs an agent loop with read-only tools over that graph and over files at the PR's commit.
-   It ends with a `submit_review` call, whose input a Schema decodes.
+4. A review runs four specialist agents in parallel (logic, security, architecture, tests), each a
+   loop with read-only tools over that graph and over files at the PR's head and base commits. Each
+   ends with `submit_findings`. Their findings merge by fingerprint, then a verifier agent with the
+   same tools ends with `submit_review`: a verdict per candidate, which may only lower a severity,
+   and the summary. Schemas decode every finish input; an unconfirmed candidate is never posted.
 5. `selectFindings` keeps what sits on diff lines, clears the strictness floor and is new on this PR.
 6. Reactions are polled every 30 minutes, as GitHub has no webhook for them, and become learnings
    in the next review's prompt.

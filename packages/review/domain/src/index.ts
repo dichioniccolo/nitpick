@@ -72,10 +72,14 @@ export const FindingsDraft = S.Struct({ findings: S.Array(FindingDraft) });
 
 export type FindingsDraft = typeof FindingsDraft.Type;
 
+export const VerdictDecision = S.Literals(["confirmed", "rejected"]);
+
+export type VerdictDecision = typeof VerdictDecision.Type;
+
 /** The verifier's call on one candidate. `severity` may only lower it. */
 export const FindingVerdict = S.Struct({
   id: S.Int,
-  decision: S.Literals(["confirmed", "rejected"]),
+  decision: VerdictDecision,
   reason: S.String,
   severity: S.optional(Severity),
 });
@@ -154,11 +158,10 @@ export const RepoConfig = S.Struct({
 
 export type RepoConfig = typeof RepoConfig.Type;
 
+/** Every `checks` key set. `failOn` is resolved, so a legacy name never reaches the gate. */
 export type ResolvedChecks = {
-  readonly enabled: boolean;
-  readonly failOn: FailOn;
-  readonly minConfidence: number;
-};
+  readonly [K in Exclude<keyof ChecksConfig, "failOn">]-?: NonNullable<ChecksConfig[K]>;
+} & { readonly failOn: FailOn };
 
 export type ResolvedConfig = {
   readonly [K in Exclude<keyof RepoConfig, "checks">]-?: NonNullable<RepoConfig[K]>;
