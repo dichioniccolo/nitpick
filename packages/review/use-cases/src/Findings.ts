@@ -90,6 +90,15 @@ export const selectFindings = (
 };
 
 /**
+ * More thumbs down than up from people who can push (see `syncFeedback`). A dismissed finding
+ * never counts again, so a team can clear one the model keeps raising.
+ */
+export const isDismissed = (votes: {
+  readonly reactionsUp: number;
+  readonly reactionsDown: number;
+}): boolean => votes.reactionsDown > votes.reactionsUp;
+
+/**
  * The findings this head still has: the ones it posted, plus repeats of earlier ones it has not
  * posted itself. The confidence score and the check both judge this set.
  */

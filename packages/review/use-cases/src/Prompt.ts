@@ -31,6 +31,8 @@ export interface ReviewContext {
   readonly noise: ReadonlyArray<string>;
   readonly useful: ReadonlyArray<string>;
   readonly previousFindings: ReadonlyArray<string>;
+  /** Raised before and voted down by the team. */
+  readonly dismissedFindings: ReadonlyArray<string>;
 }
 
 const list = (heading: string, items: ReadonlyArray<string>): Array<string> =>
@@ -74,6 +76,10 @@ export const reviewPrompt = (context: ReviewContext, nonce: string): string => {
     ...list(
       "Already raised on this PR. Report each again, with the same path, category and title, while this head still has it; it is not posted twice. Leave out the ones this head fixed",
       context.previousFindings,
+    ),
+    ...list(
+      "Already raised on this PR and dismissed by the team. Do not report them again",
+      context.dismissedFindings,
     ),
   ].join("\n\n");
 

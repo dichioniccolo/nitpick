@@ -27,6 +27,7 @@ import {
   confidenceOf,
   failedCheckOutput,
   fingerprintFromBody,
+  isDismissed,
   openFindings,
   type PlacedFinding,
   renderFinding,
@@ -130,6 +131,13 @@ const finishTool = {
   },
   decode: decoder(ReviewDraft),
 };
+
+/** How a past finding reads in the prompt: the parts its fingerprint is built from. */
+const describeFinding = (item: {
+  readonly path: string;
+  readonly category: string;
+  readonly title: string;
+}): string => `${item.path} (${item.category}): ${item.title}`;
 
 /** Post inline comments. A 422 means GitHub refused a line; those go in the summary instead. */
 const publishInline = Effect.fnUntraced(function* (
@@ -491,6 +499,8 @@ export const reviewPullRequest = Effect.fn("review.pull.run")(function* (payload
         path: finding.path,
         category: finding.category,
         fingerprint: finding.fingerprint,
+        reactionsUp: finding.reactionsUp,
+        reactionsDown: finding.reactionsDown,
       })
       .from(finding)
       .innerJoin(review, eq(review.id, finding.reviewId))
@@ -523,9 +533,8 @@ export const reviewPullRequest = Effect.fn("review.pull.run")(function* (payload
           rules: rules.map((item) => item.text),
           noise: learned.filter((item) => item.verdict === "noise").map((item) => item.text),
           useful: learned.filter((item) => item.verdict === "useful").map((item) => item.text),
-          previousFindings: previous.map(
-            (item) => `${item.path} (${item.category}): ${item.title}`,
-          ),
+          previousFindings: previous.filter((item) => !isDismissed(item)).map(describeFinding),
+          dismissedFindings: previous.filter(isDismissed).map(describeFinding),
         },
         randomBytes(16).toString("hex"),
       ),
@@ -534,12 +543,17 @@ export const reviewPullRequest = Effect.fn("review.pull.run")(function* (payload
       maxTurns: 30,
     });
 
-    const { posted: placed, repeated } = selectFindings(
+    const selected = selectFindings(
       result.value.findings,
       files,
       config,
       new Set(previous.map((item) => item.fingerprint)),
     );
+
+    const placed = selected.posted;
+    const dismissed = new Set(previous.filter(isDismissed).map((item) => item.fingerprint));
+    // A finding the team voted down stays quiet even when the model raises it again.
+    const repeated = selected.repeated.filter((item) => !dismissed.has(item.fingerprint));
 
     yield* db
       .transaction((tx) =>
@@ -668,8 +682,10 @@ export const reviewPullRequest = Effect.fn("review.pull.run")(function* (payload
 
     // Repeats an earlier head raised count with what this head posted, or a push past an unfixed
     // critical would read 5/5 and pass.
+    // A finding the team voted down no longer counts, even one this head posted.
     const repeated = saved?.repeated ?? [];
-    const open = openFindings(stored, repeated);
+    const counted = stored.filter((item) => !isDismissed(item));
+    const open = openFindings(counted, repeated);
     const confidence = confidenceOf(open);
     const posted = new Set(stored.map((item) => item.fingerprint));
 

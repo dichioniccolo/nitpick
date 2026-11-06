@@ -535,6 +535,7 @@ describe("reviewPrompt", () => {
     noise: [],
     useful: [],
     previousFindings: [],
+    dismissedFindings: [],
   };
 
   const nonce = "0f3a9c";
@@ -569,11 +570,18 @@ describe("reviewPrompt", () => {
         noise: ["steered-noise"],
         useful: ["steered-useful"],
         previousFindings: ["steered-finding"],
+        dismissedFindings: ["steered-dismissed"],
       },
       nonce,
     );
 
-    for (const steered of ["steered-path", "steered-noise", "steered-useful", "steered-finding"]) {
+    for (const steered of [
+      "steered-path",
+      "steered-noise",
+      "steered-useful",
+      "steered-finding",
+      "steered-dismissed",
+    ]) {
       assert.isAbove(prompt.indexOf(steered), prompt.indexOf(open));
       assert.isBelow(prompt.indexOf(steered), prompt.indexOf(close));
     }

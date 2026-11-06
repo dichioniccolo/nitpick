@@ -1193,6 +1193,29 @@ describe("check runs", () => {
         }),
     );
 
+    it.effect("a finding the team voted down stops counting on later heads", () =>
+      Effect.gen(function* () {
+        yield* fresh;
+        const db = yield* Database;
+        state.severity = "critical";
+        yield* reviewPullRequest(opened(67));
+        assert.strictEqual(latest(700)?.conclusion, "failure");
+
+        // Trusted thumbs down outnumber thumbs up, as syncFeedback records them.
+        yield* db.update(finding).set({ reactionsDown: 2 }).where(eq(finding.prNumber, 67));
+
+        // The model raises it again on head2, against the prompt: it still does not count.
+        state.head = "head2";
+        yield* reviewPullRequest({ ...opened(67, "head2"), trigger: "requested" });
+        assert.strictEqual(latest(701)?.conclusion, "success");
+        const body = state.summaries.at(-1) ?? "";
+        assert.include(body, "## Confidence Score: 5/5");
+        assert.notInclude(body, "Still open from earlier reviews");
+        const prompt = JSON.stringify(state.requests.at(-1));
+        assert.include(prompt, "dismissed by the team");
+      }),
+    );
+
     it.effect("ends neutral when the review fails, and a retry opens a new run", () =>
       Effect.gen(function* () {
         yield* fresh;
