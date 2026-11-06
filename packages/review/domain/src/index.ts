@@ -49,7 +49,6 @@ export const ReviewDraft = S.Struct({
   verdict: S.String,
   summary: S.String,
   changes: S.Array(S.String),
-  confidence: S.Number,
   diagram: S.optional(S.String),
   findings: S.Array(FindingDraft),
 });

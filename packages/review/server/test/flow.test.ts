@@ -65,7 +65,8 @@ interface State {
   branch: string;
   tree: ReadonlyArray<{ readonly name: string; readonly data: string }>;
   severity: "critical" | "major" | "minor";
-  confidence: number;
+  /** The head fixed the finding, so the model stops reporting it. */
+  fixed: boolean;
   checkWrites: Array<CheckWrite>;
   /** Fail every check write with this status, as an install without the Checks permission does. */
   failChecks: number | null;
@@ -114,7 +115,7 @@ const initial = (): State => ({
   branch: "base1",
   tree: [billing, { name: "acme-api-base1/node_modules/x/index.js", data: "function hidden() {}" }],
   severity: "major",
-  confidence: 5,
+  fixed: false,
   checkWrites: [],
   failChecks: null,
   failCheckUpdates: null,
@@ -268,7 +269,7 @@ const fakeClaude = {
                 type: "tool_use",
                 id: "t3",
                 name: "submit_review",
-                input: { summary: "x", confidence: 2 },
+                input: { summary: "x" },
               },
             ],
             "tool_use",
@@ -288,16 +289,19 @@ const fakeClaude = {
                 verdict: "Merge after fixing the missing import.",
                 summary: "Adds audit. cc @octocat",
                 changes: ["Calls audit on every charge"],
-                confidence: state.confidence,
                 findings: [
-                  {
-                    path: "src/billing.ts",
-                    line: 2,
-                    severity: state.severity,
-                    category: "logic",
-                    title: "audit undefined",
-                    body: "No import.",
-                  },
+                  ...(state.fixed
+                    ? []
+                    : [
+                        {
+                          path: "src/billing.ts",
+                          line: 2,
+                          severity: state.severity,
+                          category: "logic",
+                          title: "audit undefined",
+                          body: "No import.",
+                        },
+                      ]),
                   {
                     path: "src/billing.ts",
                     line: 99,
@@ -404,7 +408,8 @@ describe("review flow", () => {
 
         const [row] = yield* db.select().from(review);
         assert.strictEqual(row?.status, "completed");
-        assert.strictEqual(row?.confidence, 5);
+        // One major finding posted.
+        assert.strictEqual(row?.confidence, 3);
         assert.strictEqual(row?.inputTokens, 39);
         assert.match(row?.id ?? "", /^[0-9a-f]{8}-[0-9a-f]{4}-7/);
         assert.lengthOf(state.comments, 1);
@@ -1094,9 +1099,11 @@ describe("check runs", () => {
     /** The newest state GitHub holds for one run. */
     const latest = (id: number) => state.checkWrites.findLast((write) => write.id === id)?.run;
 
-    it.effect("opens in progress, then passes when nothing reaches failOn", () =>
+    it.effect("opens in progress, then passes when nothing is posted", () =>
       Effect.gen(function* () {
         yield* fresh;
+        // Under the balanced floor a minor finding is dropped, so the review posts nothing.
+        state.severity = "minor";
         yield* reviewPullRequest(opened(50));
         const [opening] = creates();
         const [row] = yield* reviewRow(50);
@@ -1107,7 +1114,7 @@ describe("check runs", () => {
         assert.strictEqual(row?.checkRunId, 700);
         assert.strictEqual(row?.checkConclusion, "success");
         assert.strictEqual(latest(700)?.conclusion, "success");
-        assert.strictEqual(latest(700)?.title, "1 major");
+        assert.strictEqual(latest(700)?.title, "No issues found");
         assert.strictEqual(latest(700)?.detailsUrl, `https://nitpick.test/app/reviews/${row?.id}`);
         assert.strictEqual(opening?.run.externalId, "50");
         const comment = state.summaries.at(-1) ?? "";
@@ -1136,28 +1143,83 @@ describe("check runs", () => {
 
         // Report-only stays report-only, even under the default minConfidence.
         state.severity = "critical";
-        state.confidence = 2;
         state.config = '{"checks":{"failOn":"never"}}';
         yield* reviewPullRequest(opened(53));
         assert.strictEqual(latest(702)?.conclusion, "success");
 
-        // Below the default minConfidence of 5 the check fails with no blocking finding.
-        state.severity = "minor";
+        // One major scores 3/5: below the default minConfidence of 5, with no finding at failOn.
+        state.severity = "major";
         state.config = null;
-        state.confidence = 4;
         yield* reviewPullRequest(opened(64));
         assert.strictEqual(latest(703)?.conclusion, "failure");
         assert.include(latest(703)?.summary ?? "", "confidence score below 5/5");
 
-        state.config = '{"checks":{"minConfidence":4}}';
+        state.config = '{"checks":{"minConfidence":3}}';
         yield* reviewPullRequest(opened(65));
         assert.strictEqual(latest(704)?.conclusion, "success");
+      }),
+    );
+
+    it.effect(
+      "a later head that still has an earlier critical keeps failing until it is fixed",
+      () =>
+        Effect.gen(function* () {
+          yield* fresh;
+          state.severity = "critical";
+          yield* reviewPullRequest(opened(66));
+          assert.strictEqual(latest(700)?.conclusion, "failure");
+          const inline = state.comments.length;
+
+          // The model reports it again on head2: not posted twice, but it still scores and gates.
+          state.head = "head2";
+          yield* reviewPullRequest({ ...opened(66, "head2"), trigger: "requested" });
+          assert.strictEqual(latest(701)?.conclusion, "failure");
+          assert.strictEqual(latest(701)?.title, "1 critical");
+          assert.lengthOf(state.comments, inline);
+          const again = state.summaries.at(-1) ?? "";
+          assert.include(again, "## Confidence Score: 1/5");
+          assert.include(again, "**Still open from earlier reviews:** 1 critical");
+          assert.strictEqual(
+            (yield* reviewRow(66)).find((row) => row.headSha === "head2")?.confidence,
+            1,
+          );
+
+          // head3 fixes it: the model stops reporting it, and the check clears.
+          state.head = "head3";
+          state.fixed = true;
+          yield* reviewPullRequest({ ...opened(66, "head3"), trigger: "requested" });
+          assert.strictEqual(latest(702)?.conclusion, "success");
+          assert.include(state.summaries.at(-1) ?? "", "## Confidence Score: 5/5");
+        }),
+    );
+
+    it.effect("a finding the team voted down stops counting on later heads", () =>
+      Effect.gen(function* () {
+        yield* fresh;
+        const db = yield* Database;
+        state.severity = "critical";
+        yield* reviewPullRequest(opened(67));
+        assert.strictEqual(latest(700)?.conclusion, "failure");
+
+        // Trusted thumbs down outnumber thumbs up, as syncFeedback records them.
+        yield* db.update(finding).set({ reactionsDown: 2 }).where(eq(finding.prNumber, 67));
+
+        // The model raises it again on head2, against the prompt: it still does not count.
+        state.head = "head2";
+        yield* reviewPullRequest({ ...opened(67, "head2"), trigger: "requested" });
+        assert.strictEqual(latest(701)?.conclusion, "success");
+        const body = state.summaries.at(-1) ?? "";
+        assert.include(body, "## Confidence Score: 5/5");
+        assert.notInclude(body, "Still open from earlier reviews");
+        const prompt = JSON.stringify(state.requests.at(-1));
+        assert.include(prompt, "dismissed by the team");
       }),
     );
 
     it.effect("ends neutral when the review fails, and a retry opens a new run", () =>
       Effect.gen(function* () {
         yield* fresh;
+        state.severity = "minor";
         state.dieInClaude = true;
         yield* Effect.exit(reviewPullRequest(opened(54)));
         assert.strictEqual(latest(700)?.conclusion, "neutral");
@@ -1176,6 +1238,7 @@ describe("check runs", () => {
     it.effect("a retry of a run cut off mid-way reuses its live check run", () =>
       Effect.gen(function* () {
         yield* fresh;
+        state.severity = "minor";
         const db = yield* Database;
         state.failSummary = true;
         yield* Effect.exit(reviewPullRequest(opened(55)));
@@ -1251,6 +1314,7 @@ describe("check runs", () => {
     it.effect("posts nothing when checks are off, and a 403 leaves the review whole", () =>
       Effect.gen(function* () {
         yield* fresh;
+        state.severity = "minor";
         state.config = '{"checks":{"enabled":false}}';
         yield* reviewPullRequest(opened(59));
         assert.lengthOf(state.checkWrites, 0);

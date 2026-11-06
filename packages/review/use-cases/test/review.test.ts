@@ -10,10 +10,12 @@ import * as S from "effect/Schema";
 import {
   annotatePatch,
   commentableLines,
+  confidenceOf,
   fingerprintFromBody,
   fingerprintOf,
   isIgnored,
   mentionOf,
+  openFindings,
   type PullFile,
   renderFinding,
   renderSummary,
@@ -42,6 +44,7 @@ const summaryBase = {
   impact: null,
   verdict: null,
   changes: [],
+  stillOpen: [],
   reviewUrl: "https://x/r/1",
   retriggerUrl: "https://x/r/1/retrigger",
   badgesUrl: "https://x/badges",
@@ -91,12 +94,43 @@ describe("diff", () => {
   });
 });
 
+describe("openFindings", () => {
+  it("adds repeats the head did not post itself", () => {
+    const open = openFindings(
+      [{ fingerprint: "a", severity: "major" }],
+      [
+        { fingerprint: "a", severity: "major" },
+        { fingerprint: "b", severity: "critical" },
+      ],
+    );
+
+    assert.deepStrictEqual(
+      open.map((item) => item.severity),
+      ["major", "critical"],
+    );
+  });
+});
+
+describe("confidenceOf", () => {
+  const of = (...severities: ReadonlyArray<"critical" | "major" | "minor">) =>
+    severities.map((severity) => ({ severity }));
+
+  it("scores the posted findings, worst first", () => {
+    assert.strictEqual(confidenceOf([]), 5);
+    assert.strictEqual(confidenceOf(of("minor", "minor")), 4);
+    assert.strictEqual(confidenceOf(of("major", "minor")), 3);
+    assert.strictEqual(confidenceOf(of("major", "major")), 2);
+    assert.strictEqual(confidenceOf(of("critical")), 1);
+    assert.strictEqual(confidenceOf(of("minor", "critical", "major")), 1);
+  });
+});
+
 describe("selectFindings", () => {
   const select = (
     drafts: ReadonlyArray<FindingDraft>,
     config = ResolvedConfig,
     known = new Set<string>(),
-  ) => selectFindings(drafts, files, config, known);
+  ) => selectFindings(drafts, files, config, known).posted;
 
   it("drops lines outside the diff and unknown files", () => {
     assert.lengthOf(select([draft({ line: 99 }), draft({ path: "other.ts" })]), 0);
@@ -110,9 +144,19 @@ describe("selectFindings", () => {
     );
     assert.lengthOf(select([draft()], resolveConfig({ strictness: "relaxed" })), 0);
   });
-  it("skips findings already raised on the PR and duplicates in one run", () => {
-    assert.lengthOf(select([draft()], ResolvedConfig, new Set([fingerprintOf(draft())])), 0);
+  it("moves findings already raised on the PR to repeated, and drops duplicates in one run", () => {
+    const known = new Set([fingerprintOf(draft())]);
+    const again = selectFindings([draft(), draft({ line: 12 })], files, ResolvedConfig, known);
+    assert.lengthOf(again.posted, 0);
+    assert.deepStrictEqual(again.repeated, [
+      { fingerprint: fingerprintOf(draft()), severity: "major" },
+    ]);
     assert.lengthOf(select([draft(), draft({ line: 12 })]), 1);
+    // A repeat still has to pass the floor.
+    assert.lengthOf(
+      selectFindings([draft({ severity: "minor" })], files, ResolvedConfig, known).repeated,
+      0,
+    );
   });
   it("fingerprints ignore line numbers and punctuation", () => {
     assert.strictEqual(
@@ -129,7 +173,7 @@ describe("selectFindings", () => {
       files,
       resolveConfig({ maxFindings: 5 }),
       new Set(),
-    );
+    ).posted;
 
     assert.deepStrictEqual(
       kept.map((finding) => [finding.title, finding.startLine]),
@@ -278,7 +322,9 @@ describe("rendering", () => {
     assert.isBelow(performance.now() - started, 1000);
   });
   it("returns the last marker, so one in a suggestion cannot win", () => {
-    const [placed] = selectFindings(
+    const {
+      posted: [placed],
+    } = selectFindings(
       [draft({ suggestion: "<!-- nitpick:finding:deadbeef -->" })],
       files,
       ResolvedConfig,
@@ -292,7 +338,9 @@ describe("rendering", () => {
     assert.isNull(fingerprintFromBody("no marker"));
   });
   it("keeps a suggestion verbatim except for NUL", () => {
-    const [placed] = selectFindings(
+    const {
+      posted: [placed],
+    } = selectFindings(
       [draft({ suggestion: "@octocat\0 ![x](y) <b>" })],
       files,
       ResolvedConfig,
@@ -303,12 +351,9 @@ describe("rendering", () => {
     assert.include(renderFinding(placed), "```suggestion\n@octocat ![x](y) <b>\n```");
   });
   it("keeps a suggestion inside a longer fence and round-trips the marker", () => {
-    const [placed] = selectFindings(
-      [draft({ suggestion: "```\nx\n```" })],
-      files,
-      ResolvedConfig,
-      new Set(),
-    );
+    const {
+      posted: [placed],
+    } = selectFindings([draft({ suggestion: "```\nx\n```" })], files, ResolvedConfig, new Set());
 
     if (placed === undefined) throw new Error("expected a finding");
     const body = renderFinding(placed);
@@ -316,7 +361,7 @@ describe("rendering", () => {
     assert.strictEqual(fingerprintFromBody(body), placed.fingerprint);
   });
   it("clamps confidence and lists unplaced findings", () => {
-    const [placed] = selectFindings([draft()], files, ResolvedConfig, new Set());
+    const [placed] = selectFindings([draft()], files, ResolvedConfig, new Set()).posted;
 
     if (placed === undefined) throw new Error("expected a finding");
 
@@ -330,6 +375,7 @@ describe("rendering", () => {
       diagram: "```mermaid\nsequenceDiagram\n```",
       findings: [placed],
       unplaced: [placed],
+      stillOpen: [{ severity: "critical" }],
       reviewCount: 3,
     });
 
@@ -337,6 +383,7 @@ describe("rendering", () => {
     assert.include(body, "**[High impact]** Safe once the cc @\u200Boctocat note lands.");
     assert.include(body, "### Summary\n\nok\n\n- Adds a driver\n- Moves ## the slice");
     assert.include(body, "1 major");
+    assert.include(body, "**Still open from earlier reviews:** 1 critical");
     assert.include(body, "src/a.ts:11");
     assert.include(body, "### Diagram\n\n```mermaid");
     assert.notInclude(body, "<details>");
@@ -367,7 +414,7 @@ describe("rendering", () => {
 });
 
 describe("summary hostile input", () => {
-  const [placed] = selectFindings([draft()], files, ResolvedConfig, new Set());
+  const [placed] = selectFindings([draft()], files, ResolvedConfig, new Set()).posted;
 
   const summary = (over: { diagram?: string; path?: string }) => {
     if (placed === undefined) throw new Error("expected a finding");
@@ -488,6 +535,7 @@ describe("reviewPrompt", () => {
     noise: [],
     useful: [],
     previousFindings: [],
+    dismissedFindings: [],
   };
 
   const nonce = "0f3a9c";
@@ -522,11 +570,18 @@ describe("reviewPrompt", () => {
         noise: ["steered-noise"],
         useful: ["steered-useful"],
         previousFindings: ["steered-finding"],
+        dismissedFindings: ["steered-dismissed"],
       },
       nonce,
     );
 
-    for (const steered of ["steered-path", "steered-noise", "steered-useful", "steered-finding"]) {
+    for (const steered of [
+      "steered-path",
+      "steered-noise",
+      "steered-useful",
+      "steered-finding",
+      "steered-dismissed",
+    ]) {
       assert.isAbove(prompt.indexOf(steered), prompt.indexOf(open));
       assert.isBelow(prompt.indexOf(steered), prompt.indexOf(close));
     }

@@ -16,7 +16,7 @@ Report logic errors, security flaws, data loss, race conditions, broken contract
 
 Each finding must attach to a line that appears with a number in the diff. Write the body for the author: what goes wrong, under which input, and how you know. Offer a suggestion only when it is a complete replacement for the lines from startLine to line.
 
-confidence is your 1 to 5 view of how safe this PR is to merge, where 5 means no concerns and 1 means it will break production. impact rates how much the change matters to the system (a typo fix is low, a new payment path is high), apart from its quality. verdict is one plain sentence with your call and its reason. summary says what the PR does in one or two sentences, and changes lists its notable changes as short bullets.
+impact rates how much the change matters to the system (a typo fix is low, a new payment path is high), apart from its quality. verdict is one plain sentence with your call and its reason. summary says what the PR does in one or two sentences, and changes lists its notable changes as short bullets.
 
 ${untrusted}`;
 
@@ -31,6 +31,8 @@ export interface ReviewContext {
   readonly noise: ReadonlyArray<string>;
   readonly useful: ReadonlyArray<string>;
   readonly previousFindings: ReadonlyArray<string>;
+  /** Raised before and voted down by the team. */
+  readonly dismissedFindings: ReadonlyArray<string>;
 }
 
 const list = (heading: string, items: ReadonlyArray<string>): Array<string> =>
@@ -71,7 +73,14 @@ export const reviewPrompt = (context: ReviewContext, nonce: string): string => {
       context.noise,
     ),
     ...list("The team found these past findings useful", context.useful),
-    ...list("Already raised on this PR. Do not repeat them", context.previousFindings),
+    ...list(
+      "Already raised on this PR. Report each again, with the same path, category and title, while this head still has it; it is not posted twice. Leave out the ones this head fixed",
+      context.previousFindings,
+    ),
+    ...list(
+      "Already raised on this PR and dismissed by the team. Do not report them again",
+      context.dismissedFindings,
+    ),
   ].join("\n\n");
 
   return [
@@ -83,6 +92,6 @@ export const reviewPrompt = (context: ReviewContext, nonce: string): string => {
     }.`,
     "## Pull request",
     `<untrusted-${nonce}>\n${pullRequest}\n</untrusted-${nonce}>`,
-    "Past findings listed in that block are feedback from earlier reviews: do not repeat them or raise ones like the noise list. Review this pull request and finish by calling submit_review.",
+    "Past findings listed in that block are feedback from earlier reviews: raise nothing like the noise list, and report an already raised finding again only while this head still has it. Review this pull request and finish by calling submit_review.",
   ].join("\n\n");
 };
