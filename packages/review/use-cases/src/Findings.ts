@@ -1,4 +1,5 @@
 import { createHash } from "node:crypto";
+import * as Match from "effect/Match";
 import type { FindingDraft, ResolvedConfig, Severity, Strictness } from "@nitpick/review-domain";
 
 import { commentableLines, isIgnored, type PullFile } from "./Diff.ts";
@@ -66,4 +67,26 @@ export const selectFindings = (
   return kept
     .toSorted((a, b) => severityRank[a.severity] - severityRank[b.severity])
     .slice(0, config.maxFindings);
+};
+
+/**
+ * The confidence score, from the findings the PR actually shows: 5 with none, 4 with minors only,
+ * 3 with one major, 2 with several, 1 with any critical. Findings the strictness floor, the noise
+ * list or a repeat dropped never lower it, so a review that posts nothing always reads 5/5.
+ */
+export const confidenceOf = (findings: ReadonlyArray<{ readonly severity: Severity }>): number => {
+  const count = (severity: Severity) =>
+    findings.filter((finding) => finding.severity === severity).length;
+
+  return Match.value({
+    critical: count("critical"),
+    major: count("major"),
+    minor: count("minor"),
+  }).pipe(
+    Match.when({ critical: (n) => n > 0 }, () => 1),
+    Match.when({ major: (n) => n > 1 }, () => 2),
+    Match.when({ major: 1 }, () => 3),
+    Match.when({ minor: (n) => n > 0 }, () => 4),
+    Match.orElse(() => 5),
+  );
 };

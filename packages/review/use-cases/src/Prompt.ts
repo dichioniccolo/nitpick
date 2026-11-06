@@ -16,7 +16,7 @@ Report logic errors, security flaws, data loss, race conditions, broken contract
 
 Each finding must attach to a line that appears with a number in the diff. Write the body for the author: what goes wrong, under which input, and how you know. Offer a suggestion only when it is a complete replacement for the lines from startLine to line.
 
-confidence is your 1 to 5 view of how safe this PR is to merge, where 5 means no concerns and 1 means it will break production. impact rates how much the change matters to the system (a typo fix is low, a new payment path is high), apart from its quality. verdict is one plain sentence with your call and its reason. summary says what the PR does in one or two sentences, and changes lists its notable changes as short bullets.
+impact rates how much the change matters to the system (a typo fix is low, a new payment path is high), apart from its quality. verdict is one plain sentence with your call and its reason. summary says what the PR does in one or two sentences, and changes lists its notable changes as short bullets.
 
 ${untrusted}`;
 

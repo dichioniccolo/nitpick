@@ -10,6 +10,7 @@ import * as S from "effect/Schema";
 import {
   annotatePatch,
   commentableLines,
+  confidenceOf,
   fingerprintFromBody,
   fingerprintOf,
   isIgnored,
@@ -88,6 +89,20 @@ describe("diff", () => {
 
     assert.isFalse(isIgnored("a".repeat(120), ["**a**a**a**a**a**ab"]));
     assert.isBelow(performance.now() - started, 50);
+  });
+});
+
+describe("confidenceOf", () => {
+  const of = (...severities: ReadonlyArray<"critical" | "major" | "minor">) =>
+    severities.map((severity) => ({ severity }));
+
+  it("scores the posted findings, worst first", () => {
+    assert.strictEqual(confidenceOf([]), 5);
+    assert.strictEqual(confidenceOf(of("minor", "minor")), 4);
+    assert.strictEqual(confidenceOf(of("major", "minor")), 3);
+    assert.strictEqual(confidenceOf(of("major", "major")), 2);
+    assert.strictEqual(confidenceOf(of("critical")), 1);
+    assert.strictEqual(confidenceOf(of("minor", "critical", "major")), 1);
   });
 });
 

@@ -13,6 +13,8 @@ It reproduces the behavior of hosted reviewers such as Greptile. It shares no co
   stranger cannot spend your API budget.
 - Learns from thumbs up and down on its comments, counting only users with write access, and from
   team rules in the dashboard.
+- Scores each review from the findings it posts: 5/5 with none, 4 with minors only, 3 with one major,
+  2 with several, 1 with any critical.
 - Posts a `nitpick` check on each head: `failure` when the confidence score is below
   `checks.minConfidence` (default 5; 1 when `failOn` is `never`) or a finding reaches `checks.failOn`
   (default `critical`), `neutral` when the review itself fails, `skipped` when a skip rule applies (draft, label,
