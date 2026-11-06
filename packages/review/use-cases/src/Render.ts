@@ -1,4 +1,5 @@
 import type { Impact, Severity } from "@nitpick/review-domain";
+import * as Match from "effect/Match";
 
 import type { PlacedFinding } from "./Findings.ts";
 
@@ -114,6 +115,48 @@ const unwrapFence = (diagram: string): string => {
     : diagram;
 };
 
+/** A block opener whose label is free text, as in `loop every minute`. */
+const sequenceLabel = /^(\s*(?:loop|alt|else|opt|par|and|critical|option|break)\s)(.*)$/;
+
+/** `;` ends a statement and `#` starts a comment; entities such as `#59;` already escape them. */
+const escapeSequenceText = (text: string): string =>
+  text.replace(/#[a-zA-Z0-9]+;|[#;]/g, (token) =>
+    Match.value(token).pipe(
+      Match.when("#", () => "#35;"),
+      Match.when(";", () => "#59;"),
+      Match.orElse((entity) => entity),
+    ),
+  );
+
+/**
+ * Mermaid's sequenceDiagram lexer stops message, note and block label text at
+ * `;` or `#`, so `A->>B: BEGIN; update` fails to parse and `A->>B: tag #1`
+ * loses its tail. Writing them as entity codes renders the same characters.
+ * Other diagram types are left as the model wrote them.
+ */
+export const escapeSequenceDiagram = (diagram: string): string => {
+  const lines = diagram.split("\n");
+  const header = lines.findIndex((line) => line.trim() !== "");
+
+  if (header === -1 || lines[header]?.trim() !== "sequenceDiagram") return diagram;
+
+  return lines
+    .map((line, index) => {
+      if (index <= header || line.trimStart().startsWith("%%")) return line;
+
+      const label = sequenceLabel.exec(line);
+
+      if (label !== null) return `${label[1]}${escapeSequenceText(label[2] ?? "")}`;
+
+      const colon = line.indexOf(":");
+
+      return colon === -1
+        ? line
+        : `${line.slice(0, colon + 1)}${escapeSequenceText(line.slice(colon + 1))}`;
+    })
+    .join("\n");
+};
+
 export const renderFinding = (finding: PlacedFinding): string => {
   const parts = [
     `**${badge[finding.severity]} · ${finding.category}: ${sanitize(finding.title)}**`,
@@ -197,7 +240,7 @@ export const renderSummary = (input: SummaryInput): string => {
   parts.push(`**Findings:** ${counts.length > 0 ? counts.join(", ") : "no issues found"}`);
 
   if (input.diagram !== undefined && input.diagram.trim() !== "") {
-    const diagram = unwrapFence(stripNul(input.diagram));
+    const diagram = escapeSequenceDiagram(unwrapFence(stripNul(input.diagram)));
     const fence = fenceFor(diagram);
     parts.push(`### Diagram\n\n${fence}mermaid\n${diagram}\n${fence}`);
   }

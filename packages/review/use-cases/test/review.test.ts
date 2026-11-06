@@ -387,6 +387,27 @@ describe("summary hostile input", () => {
 
     assert.include(body, "````mermaid\nA->>B: ```x\n````");
   });
+  it("escapes semicolons and hashes in sequence diagram text", () => {
+    const body = summary({
+      diagram: [
+        "sequenceDiagram",
+        "  participant DB as SQL Server",
+        "  %% a; b",
+        "  API->>DB: BEGIN; updateMany where statusId = #1",
+        "  Note over API: keeps #59; as written",
+        "  loop retry; backoff",
+        "  end",
+      ].join("\n"),
+    });
+
+    assert.include(body, "  participant DB as SQL Server\n  %% a; b\n");
+    assert.include(body, "  API->>DB: BEGIN#59; updateMany where statusId = #35;1\n");
+    assert.include(body, "  Note over API: keeps #59; as written\n");
+    assert.include(body, "  loop retry#59; backoff\n  end\n");
+  });
+  it("leaves other diagram types as written", () => {
+    assert.include(summary({ diagram: "flowchart LR\n  A-->B: x; y" }), "  A-->B: x; y\n");
+  });
   it("renders a path with backticks as code no backtick can close", () => {
     assert.include(summary({ path: "a`b.ts" }), "- ``a`b.ts:11`` ");
     assert.include(summary({ path: "`a.ts" }), "- `` `a.ts:11 `` ");
