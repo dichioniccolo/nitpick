@@ -8,18 +8,26 @@ It reproduces the behavior of hosted reviewers such as Greptile. It shares no co
 
 ## What it does
 
-- Reviews a PR when it opens, or on `@<app-slug> review`. Set `triggerOnUpdates` to review each push.
+- Reviews a PR on `@<app-slug> review` or a Re-run of its check. Set `triggerOnOpen` to also review
+  when a PR opens, reopens or leaves draft, and `triggerOnUpdates` to review each push.
+- Runs four reviewers in parallel, each with one focus: logic and data integrity, security,
+  cross-file integration and performance, and tests. Each reads the code at the PR's head and base,
+  and must back a finding with a trigger scenario and `path:line` evidence. A fifth agent verifies
+  every candidate against the code and writes the summary; only what it confirms is posted, and it
+  may lower a severity but never raise it. A review costs about five times the tokens of one agent.
 - Reviews PRs only from owners, members and collaborators, and answers mentions only from them, so a
   stranger cannot spend your API budget.
 - Learns from thumbs up and down on its comments, counting only users with write access, and from
   team rules in the dashboard.
-- Scores each review from the findings it posts: 5/5 with none, 4 with minors only, 3 with one major,
-  2 with several, 1 with any critical. A finding an earlier head raised and this head still has
+- Rates findings P0 (catastrophic) to P3 (minor). `strictness` posts P0-P3 when `strict`, P0-P2
+  when `balanced` (the default) and P0-P1 when `relaxed`.
+- Scores each review from the findings it posts: 5/5 with none, 4 with P2 or P3 only, 3 with one P1,
+  2 with several, 1 with any P0. A finding an earlier head raised and this head still has
   counts too, without being posted again.
 - Posts a `nitpick` check on each head: `failure` when the confidence score is below
   `checks.minConfidence` (default 5; 1 when `failOn` is `never`) or a finding reaches `checks.failOn`
-  (default `critical`), `neutral` when the review itself fails, `skipped` when a skip rule applies (draft, label,
-  author, base branch), and the last result again on a push it does not review. Re-run on the check
+  (default `P0`; the old `critical`, `major` and `minor` still read as P0, P1 and P2), `neutral` when the review itself fails, `skipped` when a skip rule applies (draft, label,
+  author, base branch, or an opened PR while `triggerOnOpen` is off), and the last result again on a push it does not review. Re-run on the check
   reviews that head; `checks.enabled: false` turns it off. Require it in branch protection to gate merges.
 - Writes one summary comment per PR in Greptile's layout: confidence score, an impact-tagged verdict,
   a summary with bullets, the sequence diagram, and View in Nitpick and Retrigger buttons. Retrigger

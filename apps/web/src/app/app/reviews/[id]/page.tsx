@@ -5,10 +5,11 @@ import { Confidence } from "@/components/Confidence";
 import { RowsSkeleton } from "@/components/Skeleton";
 import { dashboard } from "@/server/session";
 
-const severityStyle: Readonly<Record<"critical" | "major" | "minor", string>> = {
-  critical: "text-del font-bold",
-  major: "text-del",
-  minor: "text-soft",
+const severityStyle: Readonly<Record<"P0" | "P1" | "P2" | "P3", string>> = {
+  P0: "text-del font-bold",
+  P1: "text-del",
+  P2: "text-soft",
+  P3: "text-soft",
 };
 
 interface Props {
@@ -65,6 +66,18 @@ const Review = async ({ params }: Props) => {
                 {item.title}
               </p>
               <p className="mt-1 max-w-[70ch] whitespace-pre-wrap">{item.body}</p>
+              {item.scenario !== null && (
+                <p className="mt-2 max-w-[70ch] text-sm whitespace-pre-wrap">
+                  <span className="text-soft">Scenario: </span>
+                  {item.scenario}
+                </p>
+              )}
+              {item.evidence !== null && (
+                <p className="mt-1 max-w-[70ch] text-sm whitespace-pre-wrap">
+                  <span className="text-soft">Evidence: </span>
+                  {item.evidence}
+                </p>
+              )}
               {item.suggestion !== null && (
                 <pre className="mt-2 overflow-x-auto rounded-lg border border-rule bg-paper p-3 font-mono text-sm">
                   {item.suggestion}

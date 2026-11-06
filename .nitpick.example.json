@@ -1,5 +1,6 @@
 {
   "strictness": "balanced",
+  "triggerOnOpen": false,
   "triggerOnUpdates": false,
   "skipDrafts": true,
   "ignoreAuthors": ["dependabot[bot]"],
@@ -9,5 +10,5 @@
   "rules": ["Database calls go through a repository class"],
   "maxFindings": 15,
   "diagram": true,
-  "checks": { "enabled": true, "failOn": "critical", "minConfidence": 5 }
+  "checks": { "enabled": true, "failOn": "P0", "minConfidence": 5 }
 }

@@ -71,6 +71,19 @@ export interface Reaction {
   readonly user: string | null;
 }
 
+/** One entry of a directory listing. */
+export interface DirectoryEntry {
+  readonly name: string;
+  readonly type: "file" | "dir" | "symlink" | "submodule";
+}
+
+/** A commit on a pull request, oldest first. */
+export interface PullCommit {
+  readonly sha: string;
+  readonly author: string | null;
+  readonly message: string;
+}
+
 /** A check run's state. `conclusion` is set only once `status` is `completed`. */
 export interface CheckRunState {
   readonly status: "in_progress" | "completed";
@@ -100,6 +113,17 @@ export interface GitHubApi {
     path: string,
     sha: string,
   ) => Effect.Effect<string | null, GitHubError>;
+  /** `null` when `path` is no directory at `sha`. The root is `""`. */
+  readonly listDirectory: (
+    ref: RepoRef,
+    path: string,
+    sha: string,
+  ) => Effect.Effect<ReadonlyArray<DirectoryEntry> | null, GitHubError>;
+  /** Up to 250 commits, the most GitHub lists for a pull request. */
+  readonly pullCommits: (
+    ref: RepoRef,
+    number: number,
+  ) => Effect.Effect<ReadonlyArray<PullCommit>, GitHubError>;
   /** Post one review. Returns GitHub's ids; a 422 means a line GitHub would not place. */
   readonly createReview: (
     ref: RepoRef,
@@ -357,6 +381,49 @@ export class GitHub extends Context.Service<GitHub, GitHubApi>()("@nitpick/githu
               if (statusOf(cause) === 404) return null;
               throw cause;
             }
+          }),
+        listDirectory: (ref, path, sha) =>
+          call("listDirectory", async () => {
+            const octokit = await client(ref.installationId);
+
+            try {
+              const { data } = await octokit.rest.repos.getContent({
+                owner: ref.owner,
+                repo: ref.repo,
+                path,
+                ref: sha,
+              });
+
+              if (!Array.isArray(data)) return null;
+
+              return data.map((entry) => ({
+                name: entry.name,
+                type:
+                  entry.type === "dir" || entry.type === "symlink" || entry.type === "submodule"
+                    ? entry.type
+                    : "file",
+              }));
+            } catch (cause) {
+              if (statusOf(cause) === 404) return null;
+              throw cause;
+            }
+          }),
+        pullCommits: (ref, number) =>
+          call("pullCommits", async () => {
+            const octokit = await client(ref.installationId);
+
+            const rows = await octokit.paginate(octokit.rest.pulls.listCommits, {
+              owner: ref.owner,
+              repo: ref.repo,
+              pull_number: number,
+              per_page: 100,
+            });
+
+            return rows.map((row) => ({
+              sha: row.sha,
+              author: row.author?.login ?? null,
+              message: row.commit.message,
+            }));
           }),
         createReview: (ref, number, sha, comments) =>
           call("createReview", async () => {

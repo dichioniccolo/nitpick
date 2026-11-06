@@ -12,23 +12,23 @@ import {
   truncateSummary,
 } from "../src/index.ts";
 
-const of = (...severities: ReadonlyArray<"critical" | "major" | "minor">) =>
+const of = (...severities: ReadonlyArray<"P0" | "P1" | "P2">) =>
   severities.map((severity) => ({ severity }));
 
 describe("checkConclusion", () => {
   it("fails at or above failOn and passes below it", () => {
-    const at = (failOn: "critical" | "major" | "minor") => ({ failOn, minConfidence: 5 });
-    assert.strictEqual(checkConclusion(of("major", "minor"), 5, at("critical")), "success");
-    assert.strictEqual(checkConclusion(of("critical"), 5, at("critical")), "failure");
-    assert.strictEqual(checkConclusion(of("major"), 5, at("major")), "failure");
-    assert.strictEqual(checkConclusion(of("critical"), 5, at("major")), "failure");
-    assert.strictEqual(checkConclusion(of("minor"), 5, at("major")), "success");
-    assert.strictEqual(checkConclusion(of("minor"), 5, at("minor")), "failure");
-    assert.strictEqual(checkConclusion([], 5, at("minor")), "success");
+    const at = (failOn: "P0" | "P1" | "P2") => ({ failOn, minConfidence: 5 });
+    assert.strictEqual(checkConclusion(of("P1", "P2"), 5, at("P0")), "success");
+    assert.strictEqual(checkConclusion(of("P0"), 5, at("P0")), "failure");
+    assert.strictEqual(checkConclusion(of("P1"), 5, at("P1")), "failure");
+    assert.strictEqual(checkConclusion(of("P0"), 5, at("P1")), "failure");
+    assert.strictEqual(checkConclusion(of("P2"), 5, at("P1")), "success");
+    assert.strictEqual(checkConclusion(of("P2"), 5, at("P2")), "failure");
+    assert.strictEqual(checkConclusion([], 5, at("P2")), "success");
   });
 
   it("fails below minConfidence whatever the findings, and 1 turns that off", () => {
-    const gate = { failOn: "critical", minConfidence: 5 } as const;
+    const gate = { failOn: "P0", minConfidence: 5 } as const;
     assert.strictEqual(checkConclusion([], 4, gate), "failure");
     assert.strictEqual(checkConclusion([], 5, gate), "success");
     assert.strictEqual(checkConclusion([], 4.6, gate), "success");
@@ -38,7 +38,7 @@ describe("checkConclusion", () => {
 
   it("never fails on findings with failOn never", () => {
     const gate = { failOn: "never", minConfidence: 5 } as const;
-    assert.strictEqual(checkConclusion(of("critical", "critical"), 5, gate), "success");
+    assert.strictEqual(checkConclusion(of("P0", "P0"), 5, gate), "success");
   });
 });
 
@@ -47,17 +47,17 @@ describe("check output", () => {
     const output = completedCheckOutput({
       summary: "cc @octocat",
       confidence: 9,
-      findings: of("critical", "minor", "minor"),
-      gate: { failOn: "major", minConfidence: 5 },
+      findings: of("P0", "P2", "P2"),
+      gate: { failOn: "P1", minConfidence: 5 },
       reviewUrl: "https://nitpick.test/app/reviews/1",
     });
 
-    assert.strictEqual(output.title, "1 critical, 2 minor");
+    assert.strictEqual(output.title, "1 P0, 2 P2");
     assert.include(output.summary, "@​octocat");
     assert.include(output.summary, "5/5");
     assert.include(
       output.summary,
-      "Fails on major findings or worse or a confidence score below 5/5.",
+      "Fails on P1 findings or worse or a confidence score below 5/5.",
     );
     assert.include(output.summary, "(https://nitpick.test/app/reviews/1)");
   });
@@ -92,17 +92,17 @@ describe("check output", () => {
 });
 
 describe("checks config", () => {
-  it.effect("defaults on at critical and merges a partial block by key", () =>
+  it.effect("defaults on at P0 and merges a partial block by key", () =>
     Effect.gen(function* () {
       const decode = S.decodeUnknownEffect(S.fromJsonString(RepoConfig));
       assert.deepStrictEqual(resolveConfig(yield* decode("{}")).checks, {
         enabled: true,
-        failOn: "critical",
+        failOn: "P0",
         minConfidence: 5,
       });
-      assert.deepStrictEqual(resolveConfig(yield* decode('{"checks":{"failOn":"major"}}')).checks, {
+      assert.deepStrictEqual(resolveConfig(yield* decode('{"checks":{"failOn":"P1"}}')).checks, {
         enabled: true,
-        failOn: "major",
+        failOn: "P1",
         minConfidence: 5,
       });
       assert.strictEqual(
@@ -120,6 +120,20 @@ describe("checks config", () => {
       );
       assert.isTrue(Exit.isFailure(yield* Effect.exit(decode('{"checks":{"minConfidence":6}}'))));
       assert.isTrue(Exit.isFailure(yield* Effect.exit(decode('{"checks":{"minConfidence":4.5}}'))));
+      // Files written before P0-P3 keep working.
+      assert.strictEqual(
+        resolveConfig(yield* decode('{"checks":{"failOn":"critical"}}')).checks.failOn,
+        "P0",
+      );
+      assert.strictEqual(
+        resolveConfig(yield* decode('{"checks":{"failOn":"major"}}')).checks.failOn,
+        "P1",
+      );
+      assert.strictEqual(
+        resolveConfig(yield* decode('{"checks":{"failOn":"minor"}}')).checks.failOn,
+        "P2",
+      );
+      assert.isFalse(resolveConfig(yield* decode("{}")).triggerOnOpen);
       const bad = yield* Effect.exit(decode('{"checks":{"failOn":"blocker"}}'));
       assert.isTrue(Exit.isFailure(bad));
     }),

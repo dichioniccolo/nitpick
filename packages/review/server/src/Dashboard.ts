@@ -198,9 +198,8 @@ export class Dashboard extends Context.Service<
               .select()
               .from(finding)
               .where(eq(finding.reviewId, id))
-              .orderBy(
-                sql`case ${finding.severity} when 'critical' then 0 when 'major' then 1 else 2 end`,
-              )
+              // P0 to P3 sort as text in severity order.
+              .orderBy(asc(finding.severity), asc(finding.id))
               .pipe(Effect.orDie);
 
             return { review: row.item, fullName: row.fullName, findings };

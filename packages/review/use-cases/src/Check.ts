@@ -53,9 +53,7 @@ const countsOf = (findings: ReadonlyArray<{ readonly severity: Severity }>): str
 
 const gateOf = ({ failOn, minConfidence }: CheckGate): string => {
   const findings =
-    failOn === "never"
-      ? []
-      : [failOn === "critical" ? "critical findings" : `${failOn} findings or worse`];
+    failOn === "never" ? [] : [failOn === "P0" ? "P0 findings" : `${failOn} findings or worse`];
 
   const confidence = minConfidence > 1 ? [`a confidence score below ${minConfidence}/5`] : [];
   const rules = [...findings, ...confidence];
@@ -100,8 +98,8 @@ export const skippedCheckOutput = (reason: string): CheckOutput => ({
   summary: `Nitpick did not review this pull request: ${sanitize(reason)}. Re-run this check to review it anyway.`,
 });
 
-/** A push nitpick did not review keeps the result of the last commit it did. */
+/** A head nitpick did not review keeps the result of the last commit it did. */
 export const carriedCheckOutput = (fromSha: string, conclusion: CheckConclusion): CheckOutput => ({
   title: `Carried from ${fromSha.slice(0, 7)}: ${conclusion}`,
-  summary: `Reviews on new pushes are off, so this is the result for ${fromSha.slice(0, 7)}. Re-run this check to review this commit.`,
+  summary: `Nitpick did not review this commit, so this is the result for ${fromSha.slice(0, 7)}. Re-run this check to review this commit.`,
 });

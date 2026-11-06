@@ -82,7 +82,7 @@ export const review = pgTable(
     repeated: jsonb().$type<
       ReadonlyArray<{
         readonly fingerprint: string;
-        readonly severity: "critical" | "major" | "minor";
+        readonly severity: "P0" | "P1" | "P2" | "P3";
       }>
     >(),
     diagram: text(),
@@ -120,12 +120,16 @@ export const finding = pgTable(
     path: text().notNull(),
     startLine: integer(),
     line: integer().notNull(),
-    severity: text({ enum: ["critical", "major", "minor"] }).notNull(),
+    severity: text({ enum: ["P0", "P1", "P2", "P3"] }).notNull(),
     category: text({
-      enum: ["logic", "security", "performance", "reliability", "style", "rule"],
+      enum: ["logic", "security", "performance", "reliability", "style", "testing", "rule"],
     }).notNull(),
     title: text().notNull(),
     body: text().notNull(),
+    /** The input or state that triggers it. Null on findings from before the verifier. */
+    scenario: text(),
+    /** The code that proves it, as the reviewer cited it. */
+    evidence: text(),
     suggestion: text(),
     /** Stable across pushes, so a finding already raised on this PR is not raised again. */
     fingerprint: text().notNull(),
