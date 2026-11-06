@@ -8,8 +8,9 @@ It reproduces the behavior of hosted reviewers such as Greptile. It shares no co
 
 ## What it does
 
-- Reviews a PR on `@<app-slug> review` or a Re-run of its check. Set `triggerOnOpen` to also review
-  when a PR opens, reopens or leaves draft, and `triggerOnUpdates` to review each push.
+- Reviews a PR on `@<app-slug> review`, or on a Re-run of its check once it has one. Set
+  `triggerOnOpen` to also review when a PR opens, reopens or leaves draft, and `triggerOnUpdates`
+  to review each push.
 - Runs four reviewers in parallel, each with one focus: logic and data integrity, security,
   cross-file integration and performance, and tests. Each reads the code at the PR's head and base,
   and must back a finding with a trigger scenario and `path:line` evidence. A fifth agent verifies
@@ -24,7 +25,7 @@ It reproduces the behavior of hosted reviewers such as Greptile. It shares no co
 - Scores each review from the findings it posts: 5/5 with none, 4 with P2 or P3 only, 3 with one P1,
   2 with several, 1 with any P0. A finding an earlier head raised and this head still has
   counts too, without being posted again.
-- Posts a `nitpick` check on each head: `failure` when the confidence score is below
+- Posts a `nitpick` check on each head it reviews or skips: `failure` when the confidence score is below
   `checks.minConfidence` (default 5; 1 when `failOn` is `never`) or a finding reaches
   `checks.failOn` (default `P0`; the old `critical`, `major` and `minor` still read as P0, P1 and
   P2), `neutral` when the review itself fails, and `skipped` when a skip rule applies (draft, label,

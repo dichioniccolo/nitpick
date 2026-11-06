@@ -1413,7 +1413,7 @@ describe("check runs", () => {
       Effect.gen(function* () {
         yield* fresh;
         state.failVerifier = true;
-        yield* Effect.exit(reviewPullRequest(opened(86)));
+        assert.isTrue(Exit.isFailure(yield* Effect.exit(reviewPullRequest(opened(86)))));
         const [row] = yield* reviewRow(86);
         assert.strictEqual(row?.status, "failed");
         assert.strictEqual(row?.checkConclusion, "neutral");
