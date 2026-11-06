@@ -39,6 +39,15 @@ export default async function setup(): Promise<void> {
      on conflict do nothing`,
     [reviewId],
   );
+  // Two findings: one with the verifier's scenario and evidence, one from before they existed.
+  await client.query(
+    `insert into finding (id, "reviewId", "repositoryId", "prNumber", path, line, severity, category, title, body, scenario, evidence, fingerprint)
+     values
+       ('01960000-0000-7000-8000-000000000003', $1, 10, 7, 'src/charge.ts', 12, 'P1', 'logic', 'Cents stored as euros', 'The amount is divided by 100 twice.', 'Any charge above 1 euro.', 'src/charge.ts:12 divides; src/store.ts:40 divides again.', 'e2e0000000000001'),
+       ('01960000-0000-7000-8000-000000000004', $1, 10, 7, 'src/charge.ts', 20, 'P3', 'style', 'Unused import', 'Nothing reads it.', null, null, 'e2e0000000000002')
+     on conflict do nothing`,
+    [reviewId],
+  );
   const token = randomBytes(24).toString("base64url");
   await client.query(
     `insert into "authSession" (token, "userId", "expiresAt") values ($1, $2, now() + interval '8 hours')`,

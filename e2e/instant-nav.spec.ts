@@ -121,3 +121,21 @@ test.describe("dashboard", () => {
     });
   }
 });
+
+test.describe("review findings", () => {
+  test.use({ storageState: "e2e/.auth/demo.json" });
+
+  test("show P0-P3 severity, and scenario and evidence only where stored", async ({ page }) => {
+    await page.goto(`/app/reviews/${reviewId}`);
+    await expect(reviewHeading(page)).toBeVisible();
+    const findings = page.getByRole("listitem");
+    await expect(findings).toHaveCount(2);
+    // P1 sorts before P3.
+    await expect(findings.nth(0)).toContainText("P1Cents stored as euros");
+    await expect(findings.nth(0)).toContainText("Scenario: Any charge above 1 euro.");
+    await expect(findings.nth(0)).toContainText("Evidence: src/charge.ts:12 divides");
+    await expect(findings.nth(1)).toContainText("P3Unused import");
+    await expect(findings.nth(1)).not.toContainText("Scenario:");
+    await expect(findings.nth(1)).not.toContainText("Evidence:");
+  });
+});
