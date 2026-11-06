@@ -1,6 +1,6 @@
 import { createHmac } from "node:crypto";
 import { assert, describe, layer } from "@effect/vitest";
-import { Claude, type Message, type TurnRequest } from "@nitpick/anthropic";
+import { Claude, ClaudeError, type Message, type TurnRequest } from "@nitpick/anthropic";
 import { CodeSearch, Indexer } from "@nitpick/code-graph-server";
 import { codeFile, codeSymbol, installation, repository } from "@nitpick/code-graph-tables";
 import {
@@ -16,21 +16,31 @@ import {
 } from "@nitpick/github";
 import { Database } from "@nitpick/postgres";
 import type { Json } from "@nitpick/review-domain";
-import { IndexRepository, ReviewPullRequest, SyncFeedback } from "@nitpick/review-domain";
+import {
+  IndexRepository,
+  ReviewPullRequest,
+  Specialist,
+  SyncFeedback,
+} from "@nitpick/review-domain";
 import { layerMigrated, repositoryMigrations } from "@nitpick/postgres/test";
 import { finding, job, learning, review } from "@nitpick/review-tables";
+import { specialistSystem, verifierSystem } from "@nitpick/review-use-cases";
 import { TreeSitter } from "@nitpick/tree-sitter";
 import { eq, sql } from "drizzle-orm";
+import * as Cause from "effect/Cause";
 import * as Deferred from "effect/Deferred";
+import * as Duration from "effect/Duration";
 import * as Effect from "effect/Effect";
 import * as Exit from "effect/Exit";
 import * as Fiber from "effect/Fiber";
 import * as Layer from "effect/Layer";
 import * as Predicate from "effect/Predicate";
+import * as TestClock from "effect/testing/TestClock";
 import { createTarGzip } from "nanotar";
 
 import { type ClaimedJob, handleWebhook, Queue, Settings, verifySignature } from "../src/web.ts";
 import {
+  AgentError,
   reviewPullRequest,
   sweepStuckReviews,
   syncFeedback,
@@ -64,7 +74,15 @@ interface State {
   issueComments: Array<AuthoredComment>;
   branch: string;
   tree: ReadonlyArray<{ readonly name: string; readonly data: string }>;
-  severity: "critical" | "major" | "minor";
+  severity: "P0" | "P1" | "P2" | "P3";
+  /** What the verifier decides for every candidate. */
+  verify: "confirmed" | "rejected";
+  /** Fail the verifier's turn. */
+  failVerifier: boolean;
+  /** Fail the specialists apart from logic, or all of them. */
+  failSpecialists: "none" | "others" | "all" | "mixed";
+  /** Write `triggerOnOpen: true` when no test config is set, so an opened PR reviews. */
+  triggerOnOpen: boolean;
   /** The head fixed the finding, so the model stops reporting it. */
   fixed: boolean;
   checkWrites: Array<CheckWrite>;
@@ -114,7 +132,11 @@ const initial = (): State => ({
   issueComments: [],
   branch: "base1",
   tree: [billing, { name: "acme-api-base1/node_modules/x/index.js", data: "function hidden() {}" }],
-  severity: "major",
+  severity: "P1",
+  verify: "confirmed",
+  failVerifier: false,
+  failSpecialists: "none",
+  triggerOnOpen: true,
   fixed: false,
   checkWrites: [],
   failChecks: null,
@@ -128,7 +150,9 @@ const fileText = (path: string, sha: string): string | null => {
   if (path === ".nitpick.json") {
     state.configShas.push(sha);
 
-    return sha === state.head ? state.headConfig : state.config;
+    const base = state.config ?? (state.triggerOnOpen ? '{"triggerOnOpen":true}' : null);
+
+    return sha === state.head ? state.headConfig : base;
   }
 
   return path === "src/billing.ts" ? "line one\nline two" : null;
@@ -161,6 +185,12 @@ const fakeGitHub: GitHubApi = {
     }),
   pullFiles: () => Effect.succeed([{ path: "src/billing.ts", status: "modified", patch }]),
   fileText: (_ref, path, sha) => Effect.sync(() => fileText(path, sha)),
+  listDirectory: (_ref, path, sha) =>
+    Effect.succeed(
+      path === "src" && sha === "head1" ? [{ name: "billing.ts", type: "file" as const }] : null,
+    ),
+  pullCommits: () =>
+    Effect.succeed([{ sha: "c0ffee1234567890", author: "dev", message: "Audit charges" }]),
   createReview: (_ref, number, _sha, comments) =>
     state.refuseInline || state.failInline
       ? Effect.fail(
@@ -236,6 +266,98 @@ const usage = {
 const message = (content: ReadonlyArray<Json>, stop_reason: string): Message =>
   JSON.parse(JSON.stringify({ content, stop_reason, usage }));
 
+type Role = "logic" | "other" | "verifier";
+
+/** Turns one review takes: three for logic, one per other specialist, one for the verifier. */
+const perReview = 7;
+
+const roleOf = (request: TurnRequest): Role =>
+  request.system === verifierSystem
+    ? "verifier"
+    : request.system === specialistSystem.logic
+      ? "logic"
+      : "other";
+
+/** The turns of one role, in the order they were sent. */
+const turnsOf = (role: Role) => state.requests.filter((request) => roleOf(request) === role);
+
+const firstPrompt = (request: TurnRequest | undefined): string => {
+  const content = request?.messages[0]?.content;
+
+  return Predicate.isString(content) ? content : "";
+};
+
+const submit = (id: string, name: string, input: Json) =>
+  Effect.succeed(message([{ type: "tool_use", id, name, input }], "tool_use"));
+
+/** The logic specialist investigates, retries a bad submit, then reports; the others find nothing. */
+const specialistTurn = (role: Role, turn: number) => {
+  if (role === "other") return submit("s1", "submit_findings", { findings: [] });
+
+  if (turn === 0) {
+    return Effect.succeed(
+      message(
+        [
+          { type: "tool_use", id: "t1", name: "find_references", input: { name: "charge" } },
+          { type: "tool_use", id: "t2", name: "read_file", input: { path: "src/billing.ts" } },
+        ],
+        "tool_use",
+      ),
+    );
+  }
+
+  // Missing `findings`: the loop must return the error and let the model retry.
+  if (turn === 1) return submit("t3", "submit_findings", { summary: "x" });
+
+  const evidence = {
+    scenario: "Any charge. cc @octocat",
+    evidence: "src/billing.ts:2",
+    confidence: "high",
+  };
+
+  return submit("t4", "submit_findings", {
+    findings: [
+      ...(state.fixed
+        ? []
+        : [
+            {
+              path: "src/billing.ts",
+              line: 2,
+              severity: state.severity,
+              category: "logic",
+              title: "audit undefined",
+              body: "No import.",
+              ...evidence,
+            },
+          ]),
+      {
+        path: "src/billing.ts",
+        line: 99,
+        severity: "P1",
+        category: "logic",
+        title: "off the diff",
+        body: "Dropped.",
+        ...evidence,
+      },
+    ],
+  });
+};
+
+/** The verifier gives every candidate in its prompt the decision `state.verify` names. */
+const verifierTurn = (request: TurnRequest) => {
+  const ids = [...firstPrompt(request).matchAll(/### Candidate (\d+):/g)].map((match) =>
+    Number(match[1]),
+  );
+
+  return submit("v1", "submit_review", {
+    impact: "medium",
+    verdict: "Merge after fixing the missing import.",
+    summary: "Adds audit. cc @octocat",
+    changes: ["Calls audit on every charge"],
+    verdicts: ids.map((id) => ({ id, decision: state.verify, reason: "Read the call site." })),
+  });
+};
+
 const fakeClaude = {
   model: "claude-test",
   turn: (request: TurnRequest) =>
@@ -246,76 +368,28 @@ const fakeClaude = {
 
       if (state.hang !== null)
         return Deferred.succeed(state.hang, undefined).pipe(Effect.andThen(Effect.never));
-      const turn = request.messages.filter((item) => item.role === "assistant").length;
+      const role = roleOf(request);
 
-      if (turn === 0) {
-        return Effect.succeed(
-          message(
-            [
-              { type: "tool_use", id: "t1", name: "find_references", input: { name: "charge" } },
-              { type: "tool_use", id: "t2", name: "read_file", input: { path: "src/billing.ts" } },
-            ],
-            "tool_use",
-          ),
-        );
-      }
+      if (role === "verifier")
+        return state.failVerifier
+          ? Effect.fail(new ClaudeError({ status: 400, retryable: false, cause: null }))
+          : verifierTurn(request);
 
-      if (turn === 1) {
-        // Missing `findings`: the loop must return the error and let the model retry.
-        return Effect.succeed(
-          message(
-            [
-              {
-                type: "tool_use",
-                id: "t3",
-                name: "submit_review",
-                input: { summary: "x" },
-              },
-            ],
-            "tool_use",
-          ),
-        );
-      }
+      if (
+        state.failSpecialists === "all" ||
+        (state.failSpecialists === "others" && role === "other")
+      )
+        return Effect.fail(new ClaudeError({ status: 400, retryable: false, cause: null }));
 
-      return Effect.succeed(
-        message(
-          [
-            {
-              type: "tool_use",
-              id: "t4",
-              name: "submit_review",
-              input: {
-                impact: "medium",
-                verdict: "Merge after fixing the missing import.",
-                summary: "Adds audit. cc @octocat",
-                changes: ["Calls audit on every charge"],
-                findings: [
-                  ...(state.fixed
-                    ? []
-                    : [
-                        {
-                          path: "src/billing.ts",
-                          line: 2,
-                          severity: state.severity,
-                          category: "logic",
-                          title: "audit undefined",
-                          body: "No import.",
-                        },
-                      ]),
-                  {
-                    path: "src/billing.ts",
-                    line: 99,
-                    severity: "major",
-                    category: "logic",
-                    title: "off the diff",
-                    body: "Dropped.",
-                  },
-                ],
-              },
-            },
-          ],
-          "tool_use",
-        ),
+      // Logic runs out of tokens, a permanent AgentError; the rest are rate limited.
+      if (state.failSpecialists === "mixed")
+        return role === "logic"
+          ? Effect.succeed(message([], "max_tokens"))
+          : Effect.fail(new ClaudeError({ status: 429, retryable: true, cause: null }));
+
+      return specialistTurn(
+        role,
+        request.messages.filter((item) => item.role === "assistant").length,
       );
     }),
 };
@@ -408,19 +482,30 @@ describe("review flow", () => {
 
         const [row] = yield* db.select().from(review);
         assert.strictEqual(row?.status, "completed");
-        // One major finding posted.
+        // One P1 finding posted.
         assert.strictEqual(row?.confidence, 3);
-        assert.strictEqual(row?.inputTokens, 39);
+        // Three logic turns, one turn each for the other specialists, one verifier turn.
+        assert.strictEqual(row?.inputTokens, 7 * 13);
         assert.match(row?.id ?? "", /^[0-9a-f]{8}-[0-9a-f]{4}-7/);
         assert.lengthOf(state.comments, 1);
         assert.lengthOf(state.comments[0] ?? [], 1);
         assert.include(state.summaries[0] ?? "", "@\u200Boctocat");
         assert.notMatch(state.summaries[0] ?? "", /@octocat\b/);
-        assert.strictEqual(state.requests.length, 3);
-        const toolResults = JSON.stringify(state.requests[1]?.messages.at(-1));
+        assert.strictEqual(state.requests.length, perReview);
+        // Each specialist ran once, under its own prompt, and nothing else did.
+        assert.deepStrictEqual(
+          new Set(state.requests.map((request) => request.system)),
+          new Set([...Specialist.literals.map((key) => specialistSystem[key]), verifierSystem]),
+        );
+        const logic = turnsOf("logic");
+        const toolResults = JSON.stringify(logic[1]?.messages.at(-1));
         assert.include(toolResults, "refund");
         assert.include(toolResults, "line two");
-        assert.include(JSON.stringify(state.requests[2]?.messages.at(-1)), "is_error");
+        assert.include(JSON.stringify(logic[2]?.messages.at(-1)), "is_error");
+        // The verifier saw the one candidate on the diff and the one off it, both from logic.
+        const verifier = turnsOf("verifier");
+        assert.lengthOf(verifier, 1);
+        assert.include(firstPrompt(verifier[0]), "### Candidate 1:");
 
         const [saved] = yield* db.select().from(finding);
         assert.strictEqual(saved?.githubCommentId, 100);
@@ -703,11 +788,11 @@ describe("hardening", () => {
         assert.strictEqual(row?.error, "GitHubError upsertComment 502");
         assert.strictEqual(row?.summary, "Adds audit. cc @\u200Boctocat");
         assert.lengthOf(state.comments, 1);
-        assert.strictEqual(state.requests.length, 3);
+        assert.strictEqual(state.requests.length, perReview);
 
         state.failSummary = false;
         yield* reviewPullRequest(opened(20));
-        assert.strictEqual(state.requests.length, 3);
+        assert.strictEqual(state.requests.length, perReview);
         assert.lengthOf(state.comments, 1);
         assert.strictEqual((yield* reviewRow(20))[0]?.status, "completed");
         assert.strictEqual((yield* findingRows(20))[0]?.githubCommentId, 100);
@@ -772,7 +857,7 @@ describe("hardening", () => {
 
         yield* reviewPullRequest(opened(21));
         assert.lengthOf(state.comments, 1);
-        assert.strictEqual(state.requests.length, 3);
+        assert.strictEqual(state.requests.length, perReview);
         assert.strictEqual((yield* findingRows(21))[0]?.githubCommentId, 555);
         assert.strictEqual((yield* reviewRow(21))[0]?.summaryCommentId, 77);
       }),
@@ -807,10 +892,10 @@ describe("hardening", () => {
       Effect.gen(function* () {
         yield* secondRun;
         yield* reviewPullRequest(opened(23));
-        assert.strictEqual(state.requests.length, 3);
+        assert.strictEqual(state.requests.length, perReview);
 
         yield* reviewPullRequest({ ...opened(23), trigger: "requested" });
-        assert.strictEqual(state.requests.length, 6);
+        assert.strictEqual(state.requests.length, 2 * perReview);
         assert.lengthOf(state.comments, 1);
         assert.lengthOf(yield* findingRows(23), 1);
 
@@ -840,6 +925,30 @@ describe("hardening", () => {
         const [cut] = yield* reviewRow(25);
         assert.strictEqual(cut?.status, "failed");
         assert.strictEqual(cut?.error, "Interrupted");
+      }),
+    );
+
+    it.effect("a run past its timeout fails as an AgentError, not a hang", () =>
+      Effect.gen(function* () {
+        yield* secondRun;
+        const hang = yield* Deferred.make<void>();
+        state.hang = hang;
+        const fiber = yield* Effect.forkChild(Effect.exit(reviewPullRequest(opened(26))));
+        yield* Deferred.await(hang);
+        // Every specialist times out, so the review fails with the run's own reason.
+        yield* TestClock.adjust(Duration.minutes(13));
+        const exit = yield* Fiber.join(fiber);
+        assert.isTrue(Exit.isFailure(exit));
+
+        if (Exit.isFailure(exit)) {
+          const error = Cause.squash(exit.cause);
+          assert.isTrue(Predicate.isTagged(error, "AgentError"));
+          assert.include(error instanceof AgentError ? error.reason : "", "timed out after 12m");
+        }
+
+        const [row] = yield* reviewRow(26);
+        assert.strictEqual(row?.status, "failed");
+        assert.strictEqual(row?.error, "AgentError");
       }),
     );
 
@@ -1064,7 +1173,12 @@ describe("tool input", () => {
   layer(Services)((it) => {
     it.effect("drops NUL and rejects fractional lines", () =>
       Effect.gen(function* () {
-        const tools = yield* toolsFor(1, toRepoRef(5, "acme/api"), "head1");
+        const tools = yield* toolsFor(1, toRepoRef(5, "acme/api"), {
+          prNumber: 7,
+          headSha: "head1",
+          baseSha: "base1",
+        });
+
         const named = (name: string) => tools.find((item) => item.definition.name === name);
 
         const search = named("search_text");
@@ -1080,6 +1194,41 @@ describe("tool input", () => {
 
         const whole = yield* read.run({ path: "src/billing.ts", startLine: 2 });
         assert.include(whole, "2 line two");
+      }),
+    );
+
+    it.effect("reads the base commit, lists directories and the PR's commits", () =>
+      Effect.gen(function* () {
+        state.configShas.length = 0;
+
+        const tools = yield* toolsFor(1, toRepoRef(5, "acme/api"), {
+          prNumber: 7,
+          headSha: "head1",
+          baseSha: "base1",
+        });
+
+        const run = (name: string, input: Json) => {
+          const tool = tools.find((item) => item.definition.name === name);
+
+          if (tool === undefined) throw new Error(`expected ${name}`);
+
+          return tool.run(input);
+        };
+
+        yield* run("read_file", { path: ".nitpick.json", ref: "base" });
+        yield* run("read_file", { path: ".nitpick.json" });
+        assert.deepStrictEqual(state.configShas, ["base1", "head1"]);
+        assert.strictEqual(yield* run("list_directory", { path: "src" }), "file billing.ts");
+        assert.include(
+          yield* run("list_directory", { path: "src", ref: "base" }),
+          "not a directory",
+        );
+        const commits = yield* run("pr_commits", {});
+        assert.include(commits, "c0ffee123456");
+        assert.include(commits, "Audit charges");
+        assert.isTrue(
+          Exit.isFailure(yield* Effect.exit(run("read_file", { path: "a", ref: "x" }))),
+        );
       }),
     );
   });
@@ -1102,8 +1251,8 @@ describe("check runs", () => {
     it.effect("opens in progress, then passes when nothing is posted", () =>
       Effect.gen(function* () {
         yield* fresh;
-        // Under the balanced floor a minor finding is dropped, so the review posts nothing.
-        state.severity = "minor";
+        // Under the balanced floor a P3 finding is dropped, so the review posts nothing.
+        state.severity = "P3";
         yield* reviewPullRequest(opened(50));
         const [opening] = creates();
         const [row] = yield* reviewRow(50);
@@ -1131,73 +1280,71 @@ describe("check runs", () => {
     it.effect("fails on a finding at or above failOn, and never with failOn never", () =>
       Effect.gen(function* () {
         yield* fresh;
-        state.severity = "critical";
+        state.severity = "P0";
         yield* reviewPullRequest(opened(51));
         assert.strictEqual(latest(700)?.conclusion, "failure");
         assert.strictEqual((yield* reviewRow(51))[0]?.checkConclusion, "failure");
 
-        state.severity = "major";
-        state.config = '{"checks":{"failOn":"major"}}';
+        state.severity = "P1";
+        state.config = '{"triggerOnOpen":true,"checks":{"failOn":"P1"}}';
         yield* reviewPullRequest(opened(52));
         assert.strictEqual(latest(701)?.conclusion, "failure");
 
         // Report-only stays report-only, even under the default minConfidence.
-        state.severity = "critical";
-        state.config = '{"checks":{"failOn":"never"}}';
+        state.severity = "P0";
+        state.config = '{"triggerOnOpen":true,"checks":{"failOn":"never"}}';
         yield* reviewPullRequest(opened(53));
         assert.strictEqual(latest(702)?.conclusion, "success");
 
-        // One major scores 3/5: below the default minConfidence of 5, with no finding at failOn.
-        state.severity = "major";
+        // One P1 scores 3/5: below the default minConfidence of 5, with no finding at failOn.
+        state.severity = "P1";
         state.config = null;
         yield* reviewPullRequest(opened(64));
         assert.strictEqual(latest(703)?.conclusion, "failure");
         assert.include(latest(703)?.summary ?? "", "confidence score below 5/5");
 
-        state.config = '{"checks":{"minConfidence":3}}';
+        state.config = '{"triggerOnOpen":true,"checks":{"minConfidence":3}}';
         yield* reviewPullRequest(opened(65));
         assert.strictEqual(latest(704)?.conclusion, "success");
       }),
     );
 
-    it.effect(
-      "a later head that still has an earlier critical keeps failing until it is fixed",
-      () =>
-        Effect.gen(function* () {
-          yield* fresh;
-          state.severity = "critical";
-          yield* reviewPullRequest(opened(66));
-          assert.strictEqual(latest(700)?.conclusion, "failure");
-          const inline = state.comments.length;
+    it.effect("a later head that still has an earlier P0 keeps failing until it is fixed", () =>
+      Effect.gen(function* () {
+        yield* fresh;
+        state.severity = "P0";
+        yield* reviewPullRequest(opened(66));
+        assert.strictEqual(latest(700)?.conclusion, "failure");
+        const inline = state.comments.length;
 
-          // The model reports it again on head2: not posted twice, but it still scores and gates.
-          state.head = "head2";
-          yield* reviewPullRequest({ ...opened(66, "head2"), trigger: "requested" });
-          assert.strictEqual(latest(701)?.conclusion, "failure");
-          assert.strictEqual(latest(701)?.title, "1 critical");
-          assert.lengthOf(state.comments, inline);
-          const again = state.summaries.at(-1) ?? "";
-          assert.include(again, "## Confidence Score: 1/5");
-          assert.include(again, "**Still open from earlier reviews:** 1 critical");
-          assert.strictEqual(
-            (yield* reviewRow(66)).find((row) => row.headSha === "head2")?.confidence,
-            1,
-          );
+        // The model reports it again on head2: not posted twice, but it still scores and gates.
+        state.head = "head2";
+        yield* reviewPullRequest({ ...opened(66, "head2"), trigger: "requested" });
+        assert.strictEqual(latest(701)?.conclusion, "failure");
+        assert.strictEqual(latest(701)?.title, "1 P0");
+        assert.lengthOf(state.comments, inline);
+        const again = state.summaries.at(-1) ?? "";
+        assert.include(again, "## Confidence Score: 1/5");
+        assert.include(again, "**Still open from earlier reviews:** 1 P0");
+        assert.strictEqual(
+          (yield* reviewRow(66)).find((row) => row.headSha === "head2")?.confidence,
+          1,
+        );
 
-          // head3 fixes it: the model stops reporting it, and the check clears.
-          state.head = "head3";
-          state.fixed = true;
-          yield* reviewPullRequest({ ...opened(66, "head3"), trigger: "requested" });
-          assert.strictEqual(latest(702)?.conclusion, "success");
-          assert.include(state.summaries.at(-1) ?? "", "## Confidence Score: 5/5");
-        }),
+        // head3 fixes it: the model stops reporting it, and the check clears.
+        state.head = "head3";
+        state.fixed = true;
+        yield* reviewPullRequest({ ...opened(66, "head3"), trigger: "requested" });
+        assert.strictEqual(latest(702)?.conclusion, "success");
+        assert.include(state.summaries.at(-1) ?? "", "## Confidence Score: 5/5");
+      }),
     );
 
     it.effect("a finding the team voted down stops counting on later heads", () =>
       Effect.gen(function* () {
         yield* fresh;
         const db = yield* Database;
-        state.severity = "critical";
+        state.severity = "P0";
         yield* reviewPullRequest(opened(67));
         assert.strictEqual(latest(700)?.conclusion, "failure");
 
@@ -1219,7 +1366,7 @@ describe("check runs", () => {
     it.effect("ends neutral when the review fails, and a retry opens a new run", () =>
       Effect.gen(function* () {
         yield* fresh;
-        state.severity = "minor";
+        state.severity = "P3";
         state.dieInClaude = true;
         yield* Effect.exit(reviewPullRequest(opened(54)));
         assert.strictEqual(latest(700)?.conclusion, "neutral");
@@ -1238,7 +1385,7 @@ describe("check runs", () => {
     it.effect("a retry of a run cut off mid-way reuses its live check run", () =>
       Effect.gen(function* () {
         yield* fresh;
-        state.severity = "minor";
+        state.severity = "P3";
         const db = yield* Database;
         state.failSummary = true;
         yield* Effect.exit(reviewPullRequest(opened(55)));
@@ -1252,10 +1399,120 @@ describe("check runs", () => {
 
         // Checks turned off between attempts: the live run is still finished, no new one opens.
         yield* db.update(review).set({ status: "running" }).where(eq(review.prNumber, 55));
-        state.config = '{"checks":{"enabled":false}}';
+        state.config = '{"triggerOnOpen":true,"checks":{"enabled":false}}';
         yield* reviewPullRequest({ ...opened(55), trigger: "requested" });
         assert.lengthOf(creates(), 1);
         assert.strictEqual(state.checkWrites.at(-1)?.id, 700);
+      }),
+    );
+
+    it.effect("an opened PR waits for a mention unless the repo opts in", () =>
+      Effect.gen(function* () {
+        yield* fresh;
+        state.triggerOnOpen = false;
+        yield* reviewPullRequest(opened(80));
+        // No check at all: `skipped` would pass a required check on a PR nobody reviewed.
+        assert.lengthOf(creates(), 0);
+        assert.lengthOf(yield* reviewRow(80), 0);
+        assert.lengthOf(state.requests, 0);
+
+        state.severity = "P0";
+        yield* reviewPullRequest({ ...opened(80), trigger: "requested" });
+        assert.strictEqual((yield* reviewRow(80))[0]?.status, "completed");
+        assert.lengthOf(state.requests, perReview);
+        assert.strictEqual(latest(700)?.conclusion, "failure");
+
+        // Reopening a failing PR carries the failure; it never posts a passing skip over it.
+        yield* reviewPullRequest(opened(80));
+        assert.strictEqual(creates().at(-1)?.run.conclusion, "failure");
+        assert.include(creates().at(-1)?.run.title ?? "", "Carried from head1");
+        assert.lengthOf(state.requests, perReview);
+
+        // A new PR on the same failed commit carries the failure too, whatever its number.
+        yield* reviewPullRequest(opened(85));
+        assert.strictEqual(creates().at(-1)?.run.conclusion, "failure");
+        assert.strictEqual(creates().at(-1)?.run.externalId, "85");
+        assert.lengthOf(state.requests, perReview);
+
+        // A skip rule on that commit carries its failure instead of a passing `skipped`.
+        state.pull = { draft: true };
+        yield* reviewPullRequest(opened(80));
+        assert.strictEqual(creates().at(-1)?.run.conclusion, "failure");
+        state.pull = {};
+      }),
+    );
+
+    it.effect("posts nothing when the verifier fails", () =>
+      Effect.gen(function* () {
+        yield* fresh;
+        state.failVerifier = true;
+        assert.isTrue(Exit.isFailure(yield* Effect.exit(reviewPullRequest(opened(86)))));
+        const [row] = yield* reviewRow(86);
+        assert.strictEqual(row?.status, "failed");
+        assert.strictEqual(row?.checkConclusion, "neutral");
+        assert.lengthOf(yield* findingRows(86), 0);
+        assert.lengthOf(state.comments, 0);
+        assert.lengthOf(state.summaries, 0);
+      }),
+    );
+
+    it.effect("posts only what the verifier confirms", () =>
+      Effect.gen(function* () {
+        yield* fresh;
+        state.verify = "rejected";
+        yield* reviewPullRequest(opened(81));
+        assert.lengthOf(yield* findingRows(81), 0);
+        assert.lengthOf(state.comments, 0);
+        const [row] = yield* reviewRow(81);
+        assert.strictEqual(row?.confidence, 5);
+        assert.strictEqual(row?.checkConclusion, "success");
+      }),
+    );
+
+    it.effect("keeps scenario and evidence, and a P2 alone fails the default gate", () =>
+      Effect.gen(function* () {
+        yield* fresh;
+        state.severity = "P2";
+        yield* reviewPullRequest(opened(82));
+        const [saved] = yield* findingRows(82);
+        assert.strictEqual(saved?.severity, "P2");
+        // Model text is sanitized before it is stored, as everything bound for GitHub is.
+        assert.strictEqual(saved?.scenario, "Any charge. cc @\u200Boctocat");
+        assert.strictEqual(saved?.evidence, "src/billing.ts:2");
+        const [row] = yield* reviewRow(82);
+        assert.strictEqual(row?.confidence, 4);
+        assert.strictEqual(row?.checkConclusion, "failure");
+        assert.include(state.comments[0]?.[0]?.body ?? "", "**P2 · logic: audit undefined**");
+      }),
+    );
+
+    it.effect("a failed specialist leaves the others to finish the review", () =>
+      Effect.gen(function* () {
+        yield* fresh;
+        state.failSpecialists = "others";
+        yield* reviewPullRequest(opened(83));
+        const [row] = yield* reviewRow(83);
+        assert.strictEqual(row?.status, "completed");
+        assert.lengthOf(yield* findingRows(83), 1);
+
+        // With every specialist down there is nothing to verify, so the review fails neutral.
+        state.failSpecialists = "all";
+        yield* Effect.exit(reviewPullRequest(opened(84)));
+        const [failed] = yield* reviewRow(84);
+        assert.strictEqual(failed?.status, "failed");
+        assert.strictEqual(failed?.checkConclusion, "neutral");
+        assert.lengthOf(turnsOf("verifier"), 1);
+
+        // The retryable failure wins, so the job retries instead of being dropped as permanent.
+        state.failSpecialists = "mixed";
+        const exit = yield* Effect.exit(reviewPullRequest(opened(87)));
+        assert.isTrue(Exit.isFailure(exit));
+
+        if (Exit.isFailure(exit)) {
+          const error = Cause.squash(exit.cause);
+          assert.isTrue(Predicate.isTagged(error, "ClaudeError"));
+          assert.isTrue(error instanceof ClaudeError && error.retryable);
+        }
       }),
     );
 
@@ -1276,7 +1533,7 @@ describe("check runs", () => {
     it.effect("a push nitpick does not review carries the last result forward", () =>
       Effect.gen(function* () {
         yield* fresh;
-        state.severity = "critical";
+        state.severity = "P0";
         yield* reviewPullRequest(opened(57));
         assert.strictEqual(latest(700)?.conclusion, "failure");
 
@@ -1298,7 +1555,7 @@ describe("check runs", () => {
 
         // head2 passes on request; going back to head1 still shows head1's own failure.
         state.head = "head2";
-        state.severity = "major";
+        state.severity = "P1";
         yield* reviewPullRequest({ ...opened(57, "head2"), trigger: "requested" });
         assert.strictEqual(creates().at(-1)?.run.status, "in_progress");
         state.head = "head1";
@@ -1306,16 +1563,24 @@ describe("check runs", () => {
         assert.strictEqual(creates().at(-1)?.run.conclusion, "failure");
         state.head = "head2";
 
+        // Another PR on head2 carries head2's result from PR 57: check runs belong to the commit.
+        const before = creates().length;
         yield* reviewPullRequest({ ...opened(58, "head2"), trigger: "pushed" });
-        assert.strictEqual(creates().at(-1)?.run.conclusion, "skipped");
+        assert.strictEqual(creates().at(-1)?.run.conclusion, "failure");
+        assert.include(creates().at(-1)?.run.title ?? "", "Carried from head2");
+
+        // A commit nobody reviewed gets no check, so a required one stays pending.
+        state.head = "head9";
+        yield* reviewPullRequest({ ...opened(59, "head9"), trigger: "pushed" });
+        assert.lengthOf(creates(), before + 1);
       }),
     );
 
     it.effect("posts nothing when checks are off, and a 403 leaves the review whole", () =>
       Effect.gen(function* () {
         yield* fresh;
-        state.severity = "minor";
-        state.config = '{"checks":{"enabled":false}}';
+        state.severity = "P3";
+        state.config = '{"triggerOnOpen":true,"checks":{"enabled":false}}';
         yield* reviewPullRequest(opened(59));
         assert.lengthOf(state.checkWrites, 0);
         assert.strictEqual((yield* reviewRow(59))[0]?.checkConclusion, "success");

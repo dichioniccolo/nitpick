@@ -6,6 +6,7 @@ import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
 import * as Predicate from "effect/Predicate";
 import * as Redacted from "effect/Redacted";
+import * as S from "effect/Schema";
 import { App, RequestError } from "octokit";
 
 export class GitHubError extends Data.TaggedError("GitHubError")<{
@@ -71,6 +72,19 @@ export interface Reaction {
   readonly user: string | null;
 }
 
+/** One entry of a directory listing. */
+export interface DirectoryEntry {
+  readonly name: string;
+  readonly type: "file" | "dir" | "symlink" | "submodule";
+}
+
+/** A commit on a pull request, oldest first. */
+export interface PullCommit {
+  readonly sha: string;
+  readonly author: string | null;
+  readonly message: string;
+}
+
 /** A check run's state. `conclusion` is set only once `status` is `completed`. */
 export interface CheckRunState {
   readonly status: "in_progress" | "completed";
@@ -100,6 +114,17 @@ export interface GitHubApi {
     path: string,
     sha: string,
   ) => Effect.Effect<string | null, GitHubError>;
+  /** `null` when `path` is no directory at `sha`. The root is `""`. */
+  readonly listDirectory: (
+    ref: RepoRef,
+    path: string,
+    sha: string,
+  ) => Effect.Effect<ReadonlyArray<DirectoryEntry> | null, GitHubError>;
+  /** Up to 250 commits, the most GitHub lists for a pull request. */
+  readonly pullCommits: (
+    ref: RepoRef,
+    number: number,
+  ) => Effect.Effect<ReadonlyArray<PullCommit>, GitHubError>;
   /** Post one review. Returns GitHub's ids; a 422 means a line GitHub would not place. */
   readonly createReview: (
     ref: RepoRef,
@@ -196,7 +221,8 @@ export const describeFailure = (cause: Cause.Cause<unknown>): string => {
   return [tag, ...field("operation"), ...field("status"), ...postgresReason()].join(" ");
 };
 
-const call = <A>(operation: string, run: () => Promise<A>) =>
+/** `run` gets the fiber's abort signal, so an interrupted call cancels its HTTP request. */
+const call = <A>(operation: string, run: (signal: AbortSignal) => Promise<A>) =>
   Effect.tryPromise({
     try: run,
     catch: (cause) => new GitHubError({ operation, status: statusOf(cause), cause }),
@@ -231,6 +257,92 @@ const toCheckRun = (run: CheckRunState): CheckRunParams => {
   return params;
 };
 
+/**
+ * GitHub's answers as they arrive. Octokit's types describe the API, but nothing checks a
+ * response against them, so each is decoded here before the driver maps it. Unknown keys pass.
+ */
+const WireRepository = S.Struct({
+  id: S.Number,
+  full_name: S.String,
+  default_branch: S.String,
+  private: S.Boolean,
+});
+
+const WireBranch = S.Struct({ commit: S.Struct({ sha: S.String }) });
+const WireRepositorySize = S.Struct({ size: S.Number });
+
+/** The archive endpoints answer with binary: an ArrayBuffer from fetch, or a view of one. */
+const WireBinary = S.Union([S.instanceOf(ArrayBuffer), S.instanceOf(Uint8Array)]);
+const WireLogin = S.Struct({ login: S.String });
+
+const WirePull = S.Struct({
+  title: S.String,
+  body: S.NullOr(S.String),
+  user: S.Struct({ login: S.String, type: S.String }),
+  author_association: S.String,
+  draft: S.optionalKey(S.Boolean),
+  state: S.String,
+  labels: S.Array(S.Struct({ name: S.String })),
+  head: S.Struct({ sha: S.String }),
+  base: S.Struct({ sha: S.String, ref: S.String }),
+});
+
+const WireFile = S.Struct({
+  filename: S.String,
+  status: S.String,
+  patch: S.optional(S.String),
+});
+
+const EntryType = S.Literals(["file", "dir", "symlink", "submodule"]);
+const WireEntry = S.Struct({ name: S.String, type: S.String });
+
+const WireCommit = S.Struct({
+  sha: S.String,
+  // GitHub can send `{}` for a commit whose email matches no account.
+  author: S.optionalKey(S.NullOr(S.Struct({ login: S.optionalKey(S.String) }))),
+  commit: S.Struct({ message: S.String }),
+});
+
+const WireId = S.Struct({ id: S.Number });
+const WirePosted = S.Struct({ id: S.Number, body: S.String });
+
+const WireComment = S.Struct({
+  id: S.Number,
+  body: S.optionalKey(S.NullOr(S.String)),
+  user: S.NullOr(WireLogin),
+});
+
+const WireReaction = S.Struct({ content: S.String, user: S.NullOr(WireLogin) });
+const WirePermission = S.Struct({ permission: S.String });
+
+const toAuthored = (rows: ReadonlyArray<typeof WireComment.Type>): ReadonlyArray<AuthoredComment> =>
+  rows.map((row) => ({ id: row.id, body: row.body ?? "", author: row.user?.login ?? "" }));
+
+/**
+ * A call whose answer is decoded against `wire`, then mapped. A response that does not match
+ * fails as a `GitHubError` of the operation, with no status, rather than as a defect downstream.
+ */
+/** What Octokit answers before decoding: a body, raw text, or `null` for a 404 a call maps. */
+export type RawResponse = object | string | null;
+
+export const request = <W, A>(
+  operation: string,
+  wire: S.Decoder<W>,
+  run: (signal: AbortSignal) => Promise<RawResponse>,
+  map: (data: W) => A,
+): Effect.Effect<A, GitHubError> => {
+  const decode = S.decodeUnknownEffect(wire);
+
+  return call(operation, run).pipe(
+    Effect.flatMap((raw) =>
+      decode(raw).pipe(
+        Effect.mapError((cause) => new GitHubError({ operation, status: null, cause })),
+      ),
+    ),
+    Effect.map(map),
+  );
+};
+
 const PrivateKey = Config.Redacted("GITHUB_APP_PRIVATE_KEY");
 
 export class GitHub extends Context.Service<GitHub, GitHubApi>()("@nitpick/github/GitHub") {
@@ -250,64 +362,93 @@ export class GitHub extends Context.Service<GitHub, GitHubApi>()("@nitpick/githu
 
       const api: GitHubApi = {
         listRepositories: (installationId) =>
-          call("listRepositories", async () => {
-            const octokit = await client(installationId);
+          request(
+            "listRepositories",
+            S.Array(WireRepository),
+            async (signal) => {
+              const octokit = await client(installationId);
 
-            const rows = await octokit.paginate(
-              octokit.rest.apps.listReposAccessibleToInstallation,
-              { per_page: 100 },
-            );
-
-            return rows.map((row) => ({
-              id: row.id,
-              fullName: row.full_name,
-              defaultBranch: row.default_branch,
-              private: row.private,
-            }));
-          }),
+              return octokit.paginate(octokit.rest.apps.listReposAccessibleToInstallation, {
+                request: { signal },
+                per_page: 100,
+              });
+            },
+            (rows) =>
+              rows.map((row) => ({
+                id: row.id,
+                fullName: row.full_name,
+                defaultBranch: row.default_branch,
+                private: row.private,
+              })),
+          ),
         branchSha: (ref, branch) =>
-          call("branchSha", async () => {
-            const octokit = await client(ref.installationId);
-
-            const { data } = await octokit.rest.repos.getBranch({
-              owner: ref.owner,
-              repo: ref.repo,
-              branch,
-            });
-
-            return data.commit.sha;
-          }),
+          request(
+            "branchSha",
+            WireBranch,
+            async (signal) =>
+              (
+                await (
+                  await client(ref.installationId)
+                ).rest.repos.getBranch({
+                  request: { signal },
+                  owner: ref.owner,
+                  repo: ref.repo,
+                  branch,
+                })
+              ).data,
+            (data) => data.commit.sha,
+          ),
         repositorySizeKb: (ref) =>
-          call("repositorySize", async () => {
-            const octokit = await client(ref.installationId);
-            const { data } = await octokit.rest.repos.get({ owner: ref.owner, repo: ref.repo });
-
-            return data.size;
-          }),
+          request(
+            "repositorySize",
+            WireRepositorySize,
+            async (signal) =>
+              (
+                await (
+                  await client(ref.installationId)
+                ).rest.repos.get({
+                  request: { signal },
+                  owner: ref.owner,
+                  repo: ref.repo,
+                })
+              ).data,
+            (data) => data.size,
+          ),
         tarball: (ref, sha) =>
-          call("tarball", async () => {
-            const octokit = await client(ref.installationId);
+          request(
+            "tarball",
+            WireBinary,
+            async (signal) => {
+              const octokit = await client(ref.installationId);
 
-            const { data } = await octokit.rest.repos.downloadTarballArchive({
-              owner: ref.owner,
-              repo: ref.repo,
-              ref: sha,
-            });
+              const { data } = await octokit.rest.repos.downloadTarballArchive({
+                request: { signal },
+                owner: ref.owner,
+                repo: ref.repo,
+                ref: sha,
+              });
 
-            // SAFETY: the archive endpoints answer with binary, which octokit returns as an ArrayBuffer.
-            return new Uint8Array(data as ArrayBuffer);
-          }),
+              // Octokit types the body as unknown; `WireBinary` rejects anything but bytes.
+              return Predicate.isObject(data) ? data : null;
+            },
+            (data) => new Uint8Array(data),
+          ),
         pullRequest: (ref, number) =>
-          call("pullRequest", async () => {
-            const octokit = await client(ref.installationId);
-
-            const { data } = await octokit.rest.pulls.get({
-              owner: ref.owner,
-              repo: ref.repo,
-              pull_number: number,
-            });
-
-            return {
+          request(
+            "pullRequest",
+            WirePull,
+            async (signal) =>
+              (
+                await (
+                  await client(ref.installationId)
+                ).rest.pulls.get({
+                  request: { signal },
+                  owner: ref.owner,
+                  repo: ref.repo,
+                  pull_number: number,
+                })
+              ).data,
+            (data) => ({
               number,
               title: data.title,
               body: data.body ?? "",
@@ -320,160 +461,243 @@ export class GitHub extends Context.Service<GitHub, GitHubApi>()("@nitpick/githu
               headSha: data.head.sha,
               baseSha: data.base.sha,
               baseBranch: data.base.ref,
-            };
-          }),
+            }),
+          ),
         pullFiles: (ref, number) =>
-          call("pullFiles", async () => {
-            const octokit = await client(ref.installationId);
+          request(
+            "pullFiles",
+            S.Array(WireFile),
+            async (signal) => {
+              const octokit = await client(ref.installationId);
 
-            const rows = await octokit.paginate(octokit.rest.pulls.listFiles, {
-              owner: ref.owner,
-              repo: ref.repo,
-              pull_number: number,
-              per_page: 100,
-            });
-
-            return rows.map((row) => ({
-              path: row.filename,
-              status: row.status,
-              patch: row.patch,
-            }));
-          }),
-        fileText: (ref, path, sha) =>
-          call("fileText", async () => {
-            const octokit = await client(ref.installationId);
-
-            try {
-              const { data } = await octokit.rest.repos.getContent({
+              return octokit.paginate(octokit.rest.pulls.listFiles, {
+                request: { signal },
                 owner: ref.owner,
                 repo: ref.repo,
-                path,
-                ref: sha,
-                mediaType: { format: "raw" },
+                pull_number: number,
+                per_page: 100,
               });
+            },
+            (rows) =>
+              rows.map((row) => ({ path: row.filename, status: row.status, patch: row.patch })),
+          ),
+        fileText: (ref, path, sha) =>
+          request(
+            "fileText",
+            S.Unknown,
+            async (signal) => {
+              const octokit = await client(ref.installationId);
 
-              return Predicate.isString(data) ? data : null;
-            } catch (cause) {
-              if (statusOf(cause) === 404) return null;
-              throw cause;
-            }
-          }),
-        createReview: (ref, number, sha, comments) =>
-          call("createReview", async () => {
-            const octokit = await client(ref.installationId);
-
-            const { data } = await octokit.rest.pulls.createReview({
-              owner: ref.owner,
-              repo: ref.repo,
-              pull_number: number,
-              commit_id: sha,
-              event: "COMMENT",
-              comments: comments.map(toReviewComment),
-            });
-
-            const posted = await octokit.paginate(octokit.rest.pulls.listCommentsForReview, {
-              owner: ref.owner,
-              repo: ref.repo,
-              pull_number: number,
-              review_id: data.id,
-              per_page: 100,
-            });
-
-            return posted.map((comment) => ({ id: comment.id, body: comment.body }));
-          }),
-        upsertComment: (ref, number, commentId, body) =>
-          call("upsertComment", async () => {
-            const octokit = await client(ref.installationId);
-
-            if (commentId !== null) {
               try {
-                await octokit.rest.issues.updateComment({
+                const { data } = await octokit.rest.repos.getContent({
+                  request: { signal },
                   owner: ref.owner,
                   repo: ref.repo,
-                  comment_id: commentId,
-                  body,
+                  path,
+                  ref: sha,
+                  mediaType: { format: "raw" },
                 });
 
-                return commentId;
+                return data;
               } catch (cause) {
-                // Someone deleted the comment; fall through and post a new one.
-                if (statusOf(cause) !== 404) throw cause;
+                if (statusOf(cause) === 404) return null;
+                throw cause;
               }
-            }
+            },
+            // A directory answers with a listing, not raw text; it reads as missing.
+            (data) => (Predicate.isString(data) ? data : null),
+          ),
+        listDirectory: (ref, path, sha) =>
+          request(
+            "listDirectory",
+            S.NullOr(S.Array(WireEntry)),
+            async (signal) => {
+              const octokit = await client(ref.installationId);
 
-            const { data } = await octokit.rest.issues.createComment({
-              owner: ref.owner,
-              repo: ref.repo,
-              issue_number: number,
-              body,
-            });
+              try {
+                const { data } = await octokit.rest.repos.getContent({
+                  request: { signal },
+                  owner: ref.owner,
+                  repo: ref.repo,
+                  path,
+                  ref: sha,
+                });
 
-            return data.id;
-          }),
+                // A file answers with one object; only a listing is a directory.
+                return Array.isArray(data) ? data : null;
+              } catch (cause) {
+                if (statusOf(cause) === 404) return null;
+                throw cause;
+              }
+            },
+            (data) =>
+              data?.map((entry) => ({
+                name: entry.name,
+                type: S.is(EntryType)(entry.type) ? entry.type : "file",
+              })) ?? null,
+          ),
+        pullCommits: (ref, number) =>
+          request(
+            "pullCommits",
+            S.Array(WireCommit),
+            async (signal) => {
+              const octokit = await client(ref.installationId);
+
+              return octokit.paginate(octokit.rest.pulls.listCommits, {
+                request: { signal },
+                owner: ref.owner,
+                repo: ref.repo,
+                pull_number: number,
+                per_page: 100,
+              });
+            },
+            (rows) =>
+              rows.map((row) => ({
+                sha: row.sha,
+                author: row.author?.login ?? null,
+                message: row.commit.message,
+              })),
+          ),
+        createReview: (ref, number, sha, comments) =>
+          request(
+            "createReview",
+            S.Array(WirePosted),
+            async (signal) => {
+              const octokit = await client(ref.installationId);
+
+              const { data } = await octokit.rest.pulls.createReview({
+                request: { signal },
+                owner: ref.owner,
+                repo: ref.repo,
+                pull_number: number,
+                commit_id: sha,
+                event: "COMMENT",
+                comments: comments.map(toReviewComment),
+              });
+
+              return octokit.paginate(octokit.rest.pulls.listCommentsForReview, {
+                request: { signal },
+                owner: ref.owner,
+                repo: ref.repo,
+                pull_number: number,
+                review_id: data.id,
+                per_page: 100,
+              });
+            },
+            (rows) => rows.map((row) => ({ id: row.id, body: row.body })),
+          ),
+        upsertComment: (ref, number, commentId, body) =>
+          request(
+            "upsertComment",
+            WireId,
+            async (signal) => {
+              const octokit = await client(ref.installationId);
+
+              if (commentId !== null) {
+                try {
+                  return (
+                    await octokit.rest.issues.updateComment({
+                      request: { signal },
+                      owner: ref.owner,
+                      repo: ref.repo,
+                      comment_id: commentId,
+                      body,
+                    })
+                  ).data;
+                } catch (cause) {
+                  // Someone deleted the comment; fall through and post a new one.
+                  if (statusOf(cause) !== 404) throw cause;
+                }
+              }
+
+              return (
+                await octokit.rest.issues.createComment({
+                  request: { signal },
+                  owner: ref.owner,
+                  repo: ref.repo,
+                  issue_number: number,
+                  body,
+                })
+              ).data;
+            },
+            (data) => data.id,
+          ),
         listReviewComments: (ref, number) =>
-          call("listReviewComments", async () => {
-            const octokit = await client(ref.installationId);
+          request(
+            "listReviewComments",
+            S.Array(WireComment),
+            async (signal) => {
+              const octokit = await client(ref.installationId);
 
-            const rows = await octokit.paginate(octokit.rest.pulls.listReviewComments, {
-              owner: ref.owner,
-              repo: ref.repo,
-              pull_number: number,
-              per_page: 100,
-            });
-
-            return rows.map((row) => ({
-              id: row.id,
-              body: row.body,
-              author: row.user?.login ?? "",
-            }));
-          }),
+              return octokit.paginate(octokit.rest.pulls.listReviewComments, {
+                request: { signal },
+                owner: ref.owner,
+                repo: ref.repo,
+                pull_number: number,
+                per_page: 100,
+              });
+            },
+            toAuthored,
+          ),
         listIssueComments: (ref, number) =>
-          call("listIssueComments", async () => {
-            const octokit = await client(ref.installationId);
+          request(
+            "listIssueComments",
+            S.Array(WireComment),
+            async (signal) => {
+              const octokit = await client(ref.installationId);
 
-            const rows = await octokit.paginate(octokit.rest.issues.listComments, {
-              owner: ref.owner,
-              repo: ref.repo,
-              issue_number: number,
-              per_page: 100,
-            });
-
-            return rows.map((row) => ({
-              id: row.id,
-              body: row.body ?? "",
-              author: row.user?.login ?? "",
-            }));
-          }),
+              return octokit.paginate(octokit.rest.issues.listComments, {
+                request: { signal },
+                owner: ref.owner,
+                repo: ref.repo,
+                issue_number: number,
+                per_page: 100,
+              });
+            },
+            toAuthored,
+          ),
         commentReactions: (ref, commentId) =>
-          call("commentReactions", async () => {
-            const octokit = await client(ref.installationId);
+          request(
+            "commentReactions",
+            S.Array(WireReaction),
+            async (signal) => {
+              const octokit = await client(ref.installationId);
 
-            const rows = await octokit.paginate(
-              octokit.rest.reactions.listForPullRequestReviewComment,
-              { owner: ref.owner, repo: ref.repo, comment_id: commentId, per_page: 100 },
-            );
-
-            return rows.map((row) => ({ content: row.content, user: row.user?.login ?? null }));
-          }),
+              return octokit.paginate(octokit.rest.reactions.listForPullRequestReviewComment, {
+                request: { signal },
+                owner: ref.owner,
+                repo: ref.repo,
+                comment_id: commentId,
+                per_page: 100,
+              });
+            },
+            (rows) => rows.map((row) => ({ content: row.content, user: row.user?.login ?? null })),
+          ),
         createCheckRun: (ref, name, headSha, run) =>
-          call("createCheckRun", async () => {
-            const octokit = await client(ref.installationId);
-
-            const { data } = await octokit.rest.checks.create({
-              owner: ref.owner,
-              repo: ref.repo,
-              name,
-              head_sha: headSha,
-              ...toCheckRun(run),
-            });
-
-            return data.id;
-          }),
+          request(
+            "createCheckRun",
+            WireId,
+            async (signal) =>
+              (
+                await (
+                  await client(ref.installationId)
+                ).rest.checks.create({
+                  request: { signal },
+                  owner: ref.owner,
+                  repo: ref.repo,
+                  name,
+                  head_sha: headSha,
+                  ...toCheckRun(run),
+                })
+              ).data,
+            (data) => data.id,
+          ),
         updateCheckRun: (ref, checkRunId, run) =>
-          call("updateCheckRun", async () => {
+          call("updateCheckRun", async (signal) => {
             const octokit = await client(ref.installationId);
 
             await octokit.rest.checks.update({
+              request: { signal },
               owner: ref.owner,
               repo: ref.repo,
               check_run_id: checkRunId,
@@ -481,22 +705,28 @@ export class GitHub extends Context.Service<GitHub, GitHubApi>()("@nitpick/githu
             });
           }),
         userPermission: (ref, username) =>
-          call("userPermission", async () => {
-            const octokit = await client(ref.installationId);
+          request(
+            "userPermission",
+            S.NullOr(WirePermission),
+            async (signal) => {
+              const octokit = await client(ref.installationId);
 
-            try {
-              const { data } = await octokit.rest.repos.getCollaboratorPermissionLevel({
-                owner: ref.owner,
-                repo: ref.repo,
-                username,
-              });
-
-              return data.permission;
-            } catch (cause) {
-              if (statusOf(cause) === 404) return "none";
-              throw cause;
-            }
-          }),
+              try {
+                return (
+                  await octokit.rest.repos.getCollaboratorPermissionLevel({
+                    request: { signal },
+                    owner: ref.owner,
+                    repo: ref.repo,
+                    username,
+                  })
+                ).data;
+              } catch (cause) {
+                if (statusOf(cause) === 404) return null;
+                throw cause;
+              }
+            },
+            (data) => data?.permission ?? "none",
+          ),
       };
 
       return api;

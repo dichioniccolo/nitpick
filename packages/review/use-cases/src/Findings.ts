@@ -1,20 +1,30 @@
 import { createHash } from "node:crypto";
 import * as Match from "effect/Match";
-import type { FindingDraft, ResolvedConfig, Severity, Strictness } from "@nitpick/review-domain";
+import type {
+  FindingDraft,
+  FindingVerdict,
+  ResolvedConfig,
+  Severity,
+  Strictness,
+} from "@nitpick/review-domain";
 
 import { commentableLines, isIgnored, type PullFile } from "./Diff.ts";
 
-export interface PlacedFinding extends FindingDraft {
+/** A finding ready to post. `scenario` and `evidence` are null on rows saved before they existed. */
+export interface PlacedFinding extends Omit<FindingDraft, "scenario" | "evidence" | "confidence"> {
+  readonly scenario: string | null;
+  readonly evidence: string | null;
   readonly fingerprint: string;
 }
 
 /** Worst first: a lower rank is more severe. */
-export const severityRank: Readonly<Record<Severity, number>> = { critical: 0, major: 1, minor: 2 };
+export const severityRank: Readonly<Record<Severity, number>> = { P0: 0, P1: 1, P2: 2, P3: 3 };
 
+/** The least severe finding each strictness posts. */
 const floor: Readonly<Record<Strictness, Severity>> = {
-  strict: "minor",
-  balanced: "major",
-  relaxed: "critical",
+  strict: "P3",
+  balanced: "P2",
+  relaxed: "P1",
 };
 
 /** Same path, category and title reads as the same finding when line numbers shift between pushes. */
@@ -77,7 +87,7 @@ export const selectFindings = (
     }
 
     // A multi-line comment needs both ends in one hunk; a start GitHub would reject is dropped.
-    const { startLine, ...rest } = draft;
+    const { startLine, confidence: _confidence, ...rest } = draft;
     const validStart = startLine !== undefined && startLine < draft.line && onDiff.has(startLine);
     kept.push({ ...rest, startLine: validStart ? startLine : undefined, fingerprint });
   }
@@ -112,23 +122,77 @@ export const openFindings = (
 };
 
 /**
- * The confidence score of a head's open findings (see `openFindings`): 5 with none, 4 with minors
- * only, 3 with one major, 2 with several, 1 with any critical. Findings the strictness floor or the
- * noise list dropped never lower it, so a head with nothing open reads 5/5.
+ * The confidence score of a head's open findings (see `openFindings`): 5 with none, 4 with P2 or P3
+ * only, 3 with one P1, 2 with several, 1 with any P0. Findings the strictness floor or the noise
+ * list dropped never lower it, so a head with nothing open reads 5/5.
  */
 export const confidenceOf = (findings: ReadonlyArray<{ readonly severity: Severity }>): number => {
   const count = (severity: Severity) =>
     findings.filter((finding) => finding.severity === severity).length;
 
   return Match.value({
-    critical: count("critical"),
-    major: count("major"),
-    minor: count("minor"),
+    p0: count("P0"),
+    p1: count("P1"),
+    lower: count("P2") + count("P3"),
   }).pipe(
-    Match.when({ critical: (n) => n > 0 }, () => 1),
-    Match.when({ major: (n) => n > 1 }, () => 2),
-    Match.when({ major: 1 }, () => 3),
-    Match.when({ minor: (n) => n > 0 }, () => 4),
+    Match.when({ p0: (n) => n > 0 }, () => 1),
+    Match.when({ p1: (n) => n > 1 }, () => 2),
+    Match.when({ p1: 1 }, () => 3),
+    Match.when({ lower: (n) => n > 0 }, () => 4),
     Match.orElse(() => 5),
   );
+};
+
+/**
+ * The specialists' findings as one candidate list. Two with one fingerprint are the same finding;
+ * the more severe one stays, and the first reported wins a tie.
+ */
+export const mergeCandidates = (
+  lists: ReadonlyArray<ReadonlyArray<FindingDraft>>,
+): ReadonlyArray<FindingDraft> => {
+  const byFingerprint = new Map<string, FindingDraft>();
+
+  for (const draft of lists.flat()) {
+    const fingerprint = fingerprintOf(draft);
+    const held = byFingerprint.get(fingerprint);
+
+    if (held === undefined || severityRank[draft.severity] < severityRank[held.severity])
+      byFingerprint.set(fingerprint, draft);
+  }
+
+  return [...byFingerprint.values()];
+};
+
+export interface VerifiedFindings {
+  readonly confirmed: ReadonlyArray<FindingDraft>;
+  readonly rejected: number;
+}
+
+/**
+ * Keep the candidates the verifier confirmed, by their index. A candidate with no verdict counts as
+ * rejected, so nothing unverified is posted. A severity it gives only applies when it is lower. When
+ * the verifier names one id twice, the first verdict counts.
+ */
+export const applyVerdicts = (
+  candidates: ReadonlyArray<FindingDraft>,
+  verdicts: ReadonlyArray<FindingVerdict>,
+): VerifiedFindings => {
+  const byId = new Map<number, FindingVerdict>();
+
+  for (const verdict of verdicts) if (!byId.has(verdict.id)) byId.set(verdict.id, verdict);
+
+  const confirmed = candidates.flatMap((candidate, id) => {
+    const verdict = byId.get(id);
+
+    if (verdict === undefined || verdict.decision !== "confirmed") return [];
+    const lowered = verdict.severity;
+
+    return [
+      lowered !== undefined && severityRank[lowered] > severityRank[candidate.severity]
+        ? { ...candidate, severity: lowered }
+        : candidate,
+    ];
+  });
+
+  return { confirmed, rejected: candidates.length - confirmed.length };
 };

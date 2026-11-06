@@ -1,0 +1,1 @@
+CREATE INDEX "review_commit_idx" ON "review" ("repositoryId","headSha");

@@ -269,6 +269,7 @@
       "version": "0.0.0",
       "dependencies": {
         "@nitpick/code-graph-tables": "workspace:*",
+        "@nitpick/review-domain": "workspace:*",
         "drizzle-orm": "catalog:",
       },
       "devDependencies": {

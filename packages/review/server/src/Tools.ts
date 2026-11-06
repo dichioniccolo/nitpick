@@ -1,5 +1,5 @@
 import { CodeSearch } from "@nitpick/code-graph-server";
-import { GitHub, type RepoRef } from "@nitpick/github";
+import { GitHub, type GitHubError, type RepoRef } from "@nitpick/github";
 import type { Json } from "@nitpick/review-domain";
 import * as Effect from "effect/Effect";
 import * as S from "effect/Schema";
@@ -41,26 +41,67 @@ const Query = S.Struct({ query: S.String });
 const Name = S.Struct({ name: S.String });
 const Path = S.Struct({ path: S.String });
 
+const Side = S.Literals(["head", "base"]);
+
 const Read = S.Struct({
   path: S.String,
   startLine: S.optional(S.Int),
   endLine: S.optional(S.Int),
+  ref: S.optional(Side),
 });
+
+const List = S.Struct({ path: S.String, ref: S.optional(Side) });
+const None = S.Struct({});
 
 const text = { type: "string" } as const;
 const integer = { type: "integer" } as const;
 
+const side = {
+  type: "string",
+  enum: ["head", "base"],
+  description: "head (default) is the PR's commit, base is the commit it merges into.",
+} as const;
+
+const maxCommitMessage = 500;
+
 /**
- * The agent's read-only tools, bound to one repository and commit. The graph
- * is the indexed default branch; `read_file` reads `sha`, so it sees the PR.
+ * A GitHub failure as the tool error the model reads: what failed and the status, never the
+ * cause, which can carry request details. The log keeps the operation for the operator.
+ */
+const githubFailure =
+  (what: string) =>
+  <A, R>(effect: Effect.Effect<A, GitHubError, R>): Effect.Effect<A, Error, R> =>
+    effect.pipe(
+      Effect.tapError((error) =>
+        Effect.logWarning("agent tool GitHub failure").pipe(
+          Effect.annotateLogs({ operation: error.operation, status: error.status ?? "none" }),
+        ),
+      ),
+      Effect.mapError((error) => new Error(`GitHub ${what}: ${error.status ?? "no status"}`)),
+    );
+
+/** The pull request the tools read: its number, and the two commits it compares. */
+export interface ToolTarget {
+  readonly prNumber: number;
+  readonly headSha: string;
+  readonly baseSha: string;
+}
+
+/**
+ * The agent's read-only tools, bound to one repository and pull request. The
+ * graph is the indexed default branch; `read_file` and `list_directory` read
+ * the PR's head or base commit, so the agent can compare before and after.
  */
 export const toolsFor = Effect.fnUntraced(function* (
   repositoryId: number,
   ref: RepoRef,
-  sha: string,
+  target: ToolTarget,
 ) {
   const search = yield* CodeSearch;
   const github = yield* GitHub;
+
+  const shaOf = (which: typeof Side.Type | undefined) =>
+    which === "base" ? target.baseSha : target.headSha;
 
   return [
     tool(
@@ -97,15 +138,13 @@ export const toolsFor = Effect.fnUntraced(function* (
     ),
     tool(
       "read_file",
-      `Read a file at the commit under review, with line numbers. Returns at most ${maxReadLines} lines per call.`,
-      { path: text, startLine: integer, endLine: integer },
+      `Read a file at the PR's head or base commit, with line numbers. Returns at most ${maxReadLines} lines per call.`,
+      { path: text, startLine: integer, endLine: integer, ref: side },
       ["path"],
       Read,
-      ({ path, startLine = 1, endLine }) =>
-        github.fileText(ref, path, sha).pipe(
-          Effect.mapError(
-            (error) => new Error(`GitHub read failed for ${path}: ${error.status ?? "network"}`),
-          ),
+      ({ path, startLine = 1, endLine, ref: which }) =>
+        github.fileText(ref, path, shaOf(which)).pipe(
+          githubFailure(`read failed for ${path}`),
           Effect.map((content) => {
             if (content === null) return `${path} does not exist at this commit.`;
             const lines = content.split("\n");
@@ -119,6 +158,42 @@ export const toolsFor = Effect.fnUntraced(function* (
 
             return clip(`${path} lines ${first}-${last} of ${lines.length}\n${body}`);
           }),
+        ),
+    ),
+    tool(
+      "list_directory",
+      'List a directory at the PR\'s head or base commit. The root is "".',
+      { path: text, ref: side },
+      ["path"],
+      List,
+      ({ path, ref: which }) =>
+        github.listDirectory(ref, path, shaOf(which)).pipe(
+          githubFailure(`list failed for ${path}`),
+          Effect.map((entries) =>
+            entries === null
+              ? `${path} is not a directory at this commit.`
+              : clip(entries.map((entry) => `${entry.type} ${entry.name}`).join("\n")),
+          ),
+        ),
+    ),
+    tool(
+      "pr_commits",
+      "List the pull request's commits, oldest first, with author and message.",
+      {},
+      [],
+      None,
+      () =>
+        github.pullCommits(ref, target.prNumber).pipe(
+          githubFailure("commit list failed"),
+          Effect.map((commits) =>
+            asJson(
+              commits.map((commit) => ({
+                sha: commit.sha.slice(0, 12),
+                author: commit.author,
+                message: commit.message.slice(0, maxCommitMessage),
+              })),
+            ),
+          ),
         ),
     ),
   ];

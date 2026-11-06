@@ -70,7 +70,11 @@ describe("worker loops", () => {
 
     const github = (status: number) => new GitHubError({ operation: "x", status, cause: null });
 
-    assert.isTrue(isPermanent(Cause.fail(new AgentError({ reason: "refused" }))));
+    assert.isTrue(
+      isPermanent(
+        Cause.fail(new AgentError({ reason: "refused", inputTokens: 0, outputTokens: 0 })),
+      ),
+    );
     assert.isTrue(isPermanent(Cause.fail(claude(false))));
     assert.isFalse(isPermanent(Cause.fail(claude(true))));
     assert.isTrue(isPermanent(Cause.fail(github(404))));

@@ -1,4 +1,11 @@
 import { repository } from "@nitpick/code-graph-tables";
+import {
+  Category,
+  CheckConclusion,
+  Impact,
+  type Severity,
+  Severity as SeverityLiterals,
+} from "@nitpick/review-domain";
 import { sql } from "drizzle-orm";
 import {
   bigint,
@@ -71,7 +78,7 @@ export const review = pgTable(
     status: text({ enum: ["running", "completed", "skipped", "failed"] })
       .notNull()
       .default("running"),
-    impact: text({ enum: ["low", "medium", "high"] }),
+    impact: text({ enum: Impact.literals }),
     /** One sentence after the impact label: what the reviewer thinks of the change. */
     verdict: text(),
     summary: text(),
@@ -82,7 +89,7 @@ export const review = pgTable(
     repeated: jsonb().$type<
       ReadonlyArray<{
         readonly fingerprint: string;
-        readonly severity: "critical" | "major" | "minor";
+        readonly severity: Severity;
       }>
     >(),
     diagram: text(),
@@ -94,7 +101,7 @@ export const review = pgTable(
     /** The `nitpick` check run of this run. Cleared on restart unless a live run is reused. */
     checkRunId: bigint({ mode: "number" }),
     /** The conclusion this head earned, posted or not. Stored, so a later `failOn` never re-judges it. */
-    checkConclusion: text({ enum: ["success", "failure", "neutral", "skipped"] }),
+    checkConclusion: text({ enum: CheckConclusion.literals }),
     createdAt: timestamp({ withTimezone: true }).notNull().defaultNow(),
     /** Reset on every run, so the stuck-review sweep does not hit a retry of an old row. */
     startedAt: timestamp({ withTimezone: true }).notNull().defaultNow(),
@@ -103,6 +110,8 @@ export const review = pgTable(
   (table) => [
     index().on(table.repositoryId, table.createdAt),
     uniqueIndex("review_head_idx").on(table.repositoryId, table.prNumber, table.headSha),
+    // A head nitpick does not review carries this commit's result from any PR (see postUnreviewed).
+    index("review_commit_idx").on(table.repositoryId, table.headSha),
   ],
 );
 
@@ -120,12 +129,15 @@ export const finding = pgTable(
     path: text().notNull(),
     startLine: integer(),
     line: integer().notNull(),
-    severity: text({ enum: ["critical", "major", "minor"] }).notNull(),
-    category: text({
-      enum: ["logic", "security", "performance", "reliability", "style", "rule"],
-    }).notNull(),
+    // The domain owns these literal lists; the columns are text, so a new value needs no DDL.
+    severity: text({ enum: SeverityLiterals.literals }).notNull(),
+    category: text({ enum: Category.literals }).notNull(),
     title: text().notNull(),
     body: text().notNull(),
+    /** The input or state that triggers it. Null on findings from before the verifier. */
+    scenario: text(),
+    /** The code that proves it, as the reviewer cited it. */
+    evidence: text(),
     suggestion: text(),
     /** Stable across pushes, so a finding already raised on this PR is not raised again. */
     fingerprint: text().notNull(),

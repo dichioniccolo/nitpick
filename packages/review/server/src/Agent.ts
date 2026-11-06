@@ -8,12 +8,18 @@ import {
 } from "@nitpick/anthropic";
 import type { Json } from "@nitpick/review-domain";
 import * as Data from "effect/Data";
+import * as Duration from "effect/Duration";
 import * as Effect from "effect/Effect";
 import * as Predicate from "effect/Predicate";
 import * as Result from "effect/Result";
 import * as S from "effect/Schema";
 
-export class AgentError extends Data.TaggedError("AgentError")<{ readonly reason: string }> {}
+/** The run ended without a result. The tokens it spent until then still count toward the review. */
+export class AgentError extends Data.TaggedError("AgentError")<{
+  readonly reason: string;
+  readonly inputTokens: number;
+  readonly outputTokens: number;
+}> {}
 
 /** A read-only tool. Handlers close over one repository, so the model cannot pick another. */
 export interface AgentTool {
@@ -31,6 +37,8 @@ export interface AgentRun<A> {
     readonly decode: (input: Json) => Effect.Effect<A, Error>;
   };
   readonly maxTurns: number;
+  /** Wall time for the whole run. Past it the run fails as an AgentError with its tokens. */
+  readonly timeout: Duration.Duration;
 }
 
 export interface AgentResult<A> {
@@ -98,91 +106,114 @@ export const runAgent = Effect.fn("review.agent.run")(function* <A>(run: AgentRu
   let inputTokens = 0;
   let outputTokens = 0;
 
-  for (let turn = 1; turn <= run.maxTurns; turn += 1) {
-    const response = yield* claude.turn({ system: run.system, tools: definitions, messages });
-    inputTokens +=
-      response.usage.input_tokens +
-      (response.usage.cache_read_input_tokens ?? 0) +
-      (response.usage.cache_creation_input_tokens ?? 0);
-    outputTokens += response.usage.output_tokens;
+  // The counters live out here, so a run cut off by its timeout still reports what it spent.
+  const loop = Effect.gen(function* () {
+    for (let turn = 1; turn <= run.maxTurns; turn += 1) {
+      const response = yield* claude.turn({ system: run.system, tools: definitions, messages });
+      inputTokens +=
+        response.usage.input_tokens +
+        (response.usage.cache_read_input_tokens ?? 0) +
+        (response.usage.cache_creation_input_tokens ?? 0);
+      outputTokens += response.usage.output_tokens;
 
-    if (response.stop_reason === "refusal") {
-      return yield* new AgentError({
-        reason: `refused: ${response.stop_details?.category ?? "unspecified"}`,
-      });
-    }
+      if (response.stop_reason === "refusal") {
+        return yield* new AgentError({
+          reason: `refused: ${response.stop_details?.category ?? "unspecified"}`,
+          inputTokens,
+          outputTokens,
+        });
+      }
 
-    if (response.stop_reason === "max_tokens")
-      return yield* new AgentError({ reason: "hit max_tokens" });
+      if (response.stop_reason === "max_tokens")
+        return yield* new AgentError({ reason: "hit max_tokens", inputTokens, outputTokens });
 
-    messages.push({ role: "assistant", content: response.content });
+      messages.push({ role: "assistant", content: response.content });
 
-    if (response.stop_reason === "pause_turn") continue;
+      if (response.stop_reason === "pause_turn") continue;
 
-    const calls = response.content.flatMap((block) => (block.type === "tool_use" ? [block] : []));
+      const calls = response.content.flatMap((block) => (block.type === "tool_use" ? [block] : []));
 
-    const reminder: Array<ContentBlockParam> =
-      turn >= run.maxTurns - 2
-        ? [
-            {
-              type: "text",
-              text: `Stop investigating. Call ${finishName} now with what you have confirmed.`,
-            },
-          ]
-        : [];
+      const reminder: Array<ContentBlockParam> =
+        turn >= run.maxTurns - 2
+          ? [
+              {
+                type: "text",
+                text: `Stop investigating. Call ${finishName} now with what you have confirmed.`,
+              },
+            ]
+          : [];
 
-    if (calls.length === 0) {
-      messages.push({
-        role: "user",
-        content:
-          reminder.length > 0
-            ? reminder
-            : [{ type: "text", text: `Finish by calling ${finishName}.` }],
-      });
-      continue;
-    }
+      if (calls.length === 0) {
+        messages.push({
+          role: "user",
+          content:
+            reminder.length > 0
+              ? reminder
+              : [{ type: "text", text: `Finish by calling ${finishName}.` }],
+        });
+        continue;
+      }
 
-    const finishCall = calls.find((call) => call.name === finishName);
+      const finishCall = calls.find((call) => call.name === finishName);
 
-    if (finishCall !== undefined) {
-      const decoded = yield* run.finish.decode(inputOf(finishCall)).pipe(Effect.result);
+      if (finishCall !== undefined) {
+        const decoded = yield* run.finish.decode(inputOf(finishCall)).pipe(Effect.result);
 
-      if (Result.isSuccess(decoded)) return { value: decoded.success, inputTokens, outputTokens };
-    }
+        if (Result.isSuccess(decoded)) return { value: decoded.success, inputTokens, outputTokens };
+      }
 
-    const results = yield* Effect.forEach(
-      calls,
-      (call) => {
-        if (call.name === finishName) {
-          return run.finish.decode(inputOf(call)).pipe(
+      const results = yield* Effect.forEach(
+        calls,
+        (call) => {
+          if (call.name === finishName) {
+            return run.finish.decode(inputOf(call)).pipe(
+              Effect.match({
+                onFailure: (error) => toolError(call.id, error.message),
+                onSuccess: () => toolError(call.id, "Not accepted."),
+              }),
+            );
+          }
+
+          const tool = tools.get(call.name);
+
+          if (tool === undefined)
+            return Effect.succeed(toolError(call.id, `Unknown tool ${call.name}.`));
+
+          return tool.run(inputOf(call)).pipe(
             Effect.match({
               onFailure: (error) => toolError(call.id, error.message),
-              onSuccess: () => toolError(call.id, "Not accepted."),
+              onSuccess: (content): ToolResult => ({
+                type: "tool_result",
+                tool_use_id: call.id,
+                content,
+              }),
             }),
           );
-        }
+        },
+        { concurrency: 4 },
+      );
 
-        const tool = tools.get(call.name);
+      messages.push({ role: "user", content: [...results, ...reminder] });
+    }
 
-        if (tool === undefined)
-          return Effect.succeed(toolError(call.id, `Unknown tool ${call.name}.`));
+    return yield* new AgentError({
+      reason: `no ${finishName} call in ${run.maxTurns} turns`,
+      inputTokens,
+      outputTokens,
+    });
+  });
 
-        return tool.run(inputOf(call)).pipe(
-          Effect.match({
-            onFailure: (error) => toolError(call.id, error.message),
-            onSuccess: (content): ToolResult => ({
-              type: "tool_result",
-              tool_use_id: call.id,
-              content,
-            }),
+  return yield* loop.pipe(
+    Effect.timeoutOrElse({
+      duration: run.timeout,
+      orElse: () =>
+        Effect.fail(
+          new AgentError({
+            reason: `timed out after ${Duration.format(run.timeout)}`,
+            inputTokens,
+            outputTokens,
           }),
-        );
-      },
-      { concurrency: 4 },
-    );
-
-    messages.push({ role: "user", content: [...results, ...reminder] });
-  }
-
-  return yield* new AgentError({ reason: `no ${finishName} call in ${run.maxTurns} turns` });
+        ),
+    }),
+  );
 }) as <A>(run: AgentRun<A>) => Effect.Effect<AgentResult<A>, AgentError | ClaudeError, Claude>;

@@ -9,9 +9,21 @@ export type Json =
   | ReadonlyArray<Json>
   | { readonly [key: string]: Json };
 
-export const Severity = S.Literals(["critical", "major", "minor"]);
+/** P0 is the most severe: catastrophic failure, a critical vulnerability or wide data loss. P3 is a minor issue. */
+export const Severity = S.Literals(["P0", "P1", "P2", "P3"]);
 
 export type Severity = typeof Severity.Type;
+
+/** Severity names before P0-P3. `.nitpick.json` files still carry them in `checks.failOn`. */
+export const LegacySeverity = S.Literals(["critical", "major", "minor"]);
+
+export type LegacySeverity = typeof LegacySeverity.Type;
+
+export const severityFromLegacy: Readonly<Record<LegacySeverity, Severity>> = {
+  critical: "P0",
+  major: "P1",
+  minor: "P2",
+};
 
 export const Category = S.Literals([
   "logic",
@@ -19,12 +31,21 @@ export const Category = S.Literals([
   "performance",
   "reliability",
   "style",
+  "testing",
   "rule",
 ]);
 
 export type Category = typeof Category.Type;
 
-/** One issue the agent raises. `startLine`/`line` are new-file lines in the PR's diff. */
+/** How sure a reviewer is that a finding is real, before the verifier checks it. */
+export const FindingConfidence = S.Literals(["low", "medium", "high"]);
+
+export type FindingConfidence = typeof FindingConfidence.Type;
+
+/**
+ * One issue a reviewer raises. `startLine`/`line` are new-file lines in the PR's diff. `scenario`
+ * is the input or state that triggers it; `evidence` names the code that proves it.
+ */
 export const FindingDraft = S.Struct({
   path: S.String,
   startLine: S.optional(S.Number),
@@ -33,27 +54,54 @@ export const FindingDraft = S.Struct({
   category: Category,
   title: S.String,
   body: S.String,
+  scenario: S.String,
+  evidence: S.String,
+  confidence: FindingConfidence,
   suggestion: S.optional(S.String),
 });
 
 export type FindingDraft = typeof FindingDraft.Type;
+
+/** The reviewers that run in parallel on every PR, one focus each. */
+export const Specialist = S.Literals(["logic", "security", "architecture", "tests"]);
+
+export type Specialist = typeof Specialist.Type;
+
+/** A specialist's `submit_findings` input. */
+export const FindingsDraft = S.Struct({ findings: S.Array(FindingDraft) });
+
+export type FindingsDraft = typeof FindingsDraft.Type;
+
+export const VerdictDecision = S.Literals(["confirmed", "rejected"]);
+
+export type VerdictDecision = typeof VerdictDecision.Type;
+
+/** The verifier's call on one candidate. `severity` may only lower it. */
+export const FindingVerdict = S.Struct({
+  id: S.Int,
+  decision: VerdictDecision,
+  reason: S.String,
+  severity: S.optional(Severity),
+});
+
+export type FindingVerdict = typeof FindingVerdict.Type;
 
 /** How much the change matters, shown as `[High impact]` before the verdict. */
 export const Impact = S.Literals(["low", "medium", "high"]);
 
 export type Impact = typeof Impact.Type;
 
-/** The `submit_review` tool's input. */
-export const ReviewDraft = S.Struct({
+/** The verifier's `submit_review` input: the summary, plus a verdict per candidate finding. */
+export const VerifiedReview = S.Struct({
   impact: Impact,
   verdict: S.String,
   summary: S.String,
   changes: S.Array(S.String),
   diagram: S.optional(S.String),
-  findings: S.Array(FindingDraft),
+  verdicts: S.Array(FindingVerdict),
 });
 
-export type ReviewDraft = typeof ReviewDraft.Type;
+export type VerifiedReview = typeof VerifiedReview.Type;
 
 export const Strictness = S.Literals(["strict", "balanced", "relaxed"]);
 
@@ -63,9 +111,14 @@ export type Strictness = typeof Strictness.Type;
  * The lowest severity that fails the check. `never` makes the check report only: unless the file
  * also sets `minConfidence`, the confidence rule is off too.
  */
-export const FailOn = S.Literals(["critical", "major", "minor", "never"]);
+export const FailOn = S.Literals(["P0", "P1", "P2", "P3", "never"]);
 
 export type FailOn = typeof FailOn.Type;
+
+/** What `checks.failOn` accepts: P0-P3, `never`, or a legacy name that `resolveConfig` maps. */
+export const FailOnInput = S.Union([FailOn, LegacySeverity]);
+
+export type FailOnInput = typeof FailOnInput.Type;
 
 /** What a `nitpick` check run ends with. Errors are `neutral`, so an outage never blocks a merge. */
 export const CheckConclusion = S.Literals(["success", "failure", "neutral", "skipped"]);
@@ -75,7 +128,7 @@ export type CheckConclusion = typeof CheckConclusion.Type;
 /** The `checks` block of `.nitpick.json`. */
 export const ChecksConfig = S.Struct({
   enabled: S.optionalKey(S.Boolean),
-  failOn: S.optionalKey(FailOn),
+  failOn: S.optionalKey(FailOnInput),
   /** The check fails below this confidence score; 1 turns the rule off. */
   minConfidence: S.optionalKey(S.Int.check(S.isBetween({ minimum: 1, maximum: 5 }))),
 });
@@ -89,6 +142,8 @@ const cappedStrings = (maxItemLength: number) =>
 /** `.nitpick.json` at the repository root. Every field is optional. */
 export const RepoConfig = S.Struct({
   strictness: S.optionalKey(Strictness),
+  /** Review when a PR opens, reopens or leaves draft. Off: only a mention or a check re-run reviews. */
+  triggerOnOpen: S.optionalKey(S.Boolean),
   triggerOnUpdates: S.optionalKey(S.Boolean),
   skipDrafts: S.optionalKey(S.Boolean),
   ignorePaths: S.optionalKey(cappedStrings(200)),
@@ -103,7 +158,10 @@ export const RepoConfig = S.Struct({
 
 export type RepoConfig = typeof RepoConfig.Type;
 
-export type ResolvedChecks = { readonly [K in keyof ChecksConfig]-?: NonNullable<ChecksConfig[K]> };
+/** Every `checks` key set. `failOn` is resolved, so a legacy name never reaches the gate. */
+export type ResolvedChecks = {
+  readonly [K in Exclude<keyof ChecksConfig, "failOn">]-?: NonNullable<ChecksConfig[K]>;
+} & { readonly failOn: FailOn };
 
 export type ResolvedConfig = {
   readonly [K in Exclude<keyof RepoConfig, "checks">]-?: NonNullable<RepoConfig[K]>;
@@ -111,6 +169,7 @@ export type ResolvedConfig = {
 
 export const ResolvedConfig: ResolvedConfig = {
   strictness: "balanced",
+  triggerOnOpen: false,
   triggerOnUpdates: false,
   skipDrafts: true,
   ignorePaths: [],
@@ -120,20 +179,29 @@ export const ResolvedConfig: ResolvedConfig = {
   rules: [],
   maxFindings: 15,
   diagram: true,
-  checks: { enabled: true, failOn: "critical", minConfidence: 5 },
+  checks: { enabled: true, failOn: "P0", minConfidence: 5 },
 };
 
-/** Defaults under the file's values. `checks` merges by key, so `{ "failOn": "major" }` keeps it enabled. */
-export const resolveConfig = (config: RepoConfig): ResolvedConfig => ({
-  ...ResolvedConfig,
-  ...config,
-  checks: {
-    ...ResolvedConfig.checks,
-    // A repo that chose "never fail" keeps a report-only check when the confidence rule arrived.
-    ...(config.checks?.failOn === "never" ? { minConfidence: 1 } : undefined),
-    ...config.checks,
-  },
-});
+const resolveFailOn = (failOn: FailOnInput): FailOn =>
+  S.is(LegacySeverity)(failOn) ? severityFromLegacy[failOn] : failOn;
+
+/** Defaults under the file's values. `checks` merges by key, so `{ "failOn": "P1" }` keeps it enabled. */
+export const resolveConfig = (config: RepoConfig): ResolvedConfig => {
+  const { checks, ...rest } = config;
+  const failOn = checks?.failOn;
+
+  return {
+    ...ResolvedConfig,
+    ...rest,
+    checks: {
+      ...ResolvedConfig.checks,
+      // A repo that chose "never fail" keeps a report-only check when the confidence rule arrived.
+      ...(failOn === "never" ? { minConfidence: 1 } : undefined),
+      ...checks,
+      failOn: failOn === undefined ? ResolvedConfig.checks.failOn : resolveFailOn(failOn),
+    },
+  };
+};
 
 /** Queue payloads. `kind` also names the job row. */
 export const SyncInstallation = S.TaggedStruct("SyncInstallation", { installationId: S.Number });

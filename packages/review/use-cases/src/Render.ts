@@ -1,4 +1,4 @@
-import type { Impact, Severity } from "@nitpick/review-domain";
+import { type Impact, Severity } from "@nitpick/review-domain";
 import * as Match from "effect/Match";
 
 import type { PlacedFinding } from "./Findings.ts";
@@ -79,12 +79,6 @@ export const sanitize = (text: string): string =>
     .replace(/#(?=\d)|(?<=&)#(?!\u200b)/g, `$&${zeroWidthSpace}`)
     .replace(/\bGH-(?=\d)/gi, `$&${zeroWidthSpace}`);
 
-const badge: Readonly<Record<Severity, string>> = {
-  critical: "Critical",
-  major: "Major",
-  minor: "Minor",
-};
-
 const longestBacktickRun = (code: string): number => {
   let longest = 0;
 
@@ -159,7 +153,7 @@ export const escapeSequenceDiagram = (diagram: string): string => {
 
 export const renderFinding = (finding: PlacedFinding): string => {
   const parts = [
-    `**${badge[finding.severity]} · ${finding.category}: ${sanitize(finding.title)}**`,
+    `**${finding.severity} · ${finding.category}: ${sanitize(finding.title)}**`,
     sanitize(finding.body),
   ];
 
@@ -212,11 +206,11 @@ const button = (href: string, src: string, alt: string): string =>
 /** One bullet per line: a newline in model text would start a new block. */
 const bullet = (text: string): string => `- ${sanitize(text).replace(/\s*[\r\n]+\s*/g, " ")}`;
 
-/** `["1 critical", "2 minor"]`, worst first, leaving out severities with no finding. */
+/** `["1 P0", "2 P2"]`, worst first, leaving out severities with no finding. */
 export const severityCounts = (
   findings: ReadonlyArray<{ readonly severity: Severity }>,
 ): ReadonlyArray<string> =>
-  (["critical", "major", "minor"] as const).flatMap((severity) => {
+  Severity.literals.flatMap((severity) => {
     const count = findings.filter((finding) => finding.severity === severity).length;
 
     return count > 0 ? [`${count} ${severity}`] : [];

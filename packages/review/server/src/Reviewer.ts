@@ -13,7 +13,6 @@ import {
 import { Database } from "@nitpick/postgres";
 import {
   RepoConfig,
-  ReviewDraft,
   type ResolvedConfig,
   resolveConfig,
   ResolvedConfig as defaults,
@@ -32,8 +31,7 @@ import {
   type PlacedFinding,
   renderFinding,
   renderSummary,
-  reviewPrompt,
-  reviewSystem,
+  resultToCarry,
   runningCheckOutput,
   sanitize,
   selectFindings,
@@ -48,7 +46,7 @@ import * as Exit from "effect/Exit";
 import * as O from "effect/Option";
 import * as S from "effect/Schema";
 
-import { decoder, objectSchema, runAgent } from "./Agent.ts";
+import { runPanel } from "./Panel.ts";
 import { Settings } from "./Settings.ts";
 import { toolsFor } from "./Tools.ts";
 
@@ -70,67 +68,6 @@ export const loadConfig = Effect.fn("review.config.load")(function* (
     Effect.orElseSucceed((): ResolvedConfig => defaults),
   );
 });
-
-const finishTool = {
-  definition: {
-    name: "submit_review",
-    description: "Submit the finished review. Ends the run.",
-    eager_input_streaming: true,
-    input_schema: objectSchema(
-      {
-        impact: {
-          type: "string",
-          enum: ["low", "medium", "high"],
-          description: "How much this change matters to the system, whatever its quality.",
-        },
-        verdict: {
-          type: "string",
-          description: "One sentence: your call on merging and the reason. Plain text.",
-        },
-        summary: {
-          type: "string",
-          description: "One or two sentences on what the PR does, in Markdown.",
-        },
-        changes: {
-          type: "array",
-          items: { type: "string" },
-          description:
-            "Three to eight bullets, one notable change each, one line, no leading dash.",
-        },
-        diagram: {
-          type: "string",
-          description: "Optional Mermaid sequenceDiagram source, without a code fence.",
-        },
-        findings: {
-          type: "array",
-          items: {
-            type: "object",
-            properties: {
-              path: { type: "string" },
-              startLine: { type: "integer" },
-              line: { type: "integer", description: "New-file line from the diff gutter." },
-              severity: { type: "string", enum: ["critical", "major", "minor"] },
-              category: {
-                type: "string",
-                enum: ["logic", "security", "performance", "reliability", "style", "rule"],
-              },
-              title: { type: "string", description: "Under 80 characters." },
-              body: { type: "string" },
-              suggestion: {
-                type: "string",
-                description: "Replacement text for startLine through line.",
-              },
-            },
-            required: ["path", "line", "severity", "category", "title", "body"],
-            additionalProperties: false,
-          },
-        },
-      },
-      ["impact", "verdict", "summary", "changes", "findings"],
-    ),
-  },
-  decode: decoder(ReviewDraft),
-};
 
 /** How a past finding reads in the prompt: the parts its fingerprint is built from. */
 const describeFinding = (item: {
@@ -189,6 +126,8 @@ const toPlaced = (item: StoredFinding): PlacedFinding => ({
   category: item.category,
   title: item.title,
   body: item.body,
+  scenario: item.scenario,
+  evidence: item.evidence,
   suggestion: item.suggestion ?? undefined,
   fingerprint: item.fingerprint,
 });
@@ -209,10 +148,18 @@ const quietly = <A>(write: Effect.Effect<A, GitHubError>): Effect.Effect<A | nul
     ),
   );
 
+/** Rows `resultToCarry` weighs. A PR rarely has this many reviewed heads. */
+const maxCarryRows = 100;
+
 /**
- * The check for a head nitpick does not review: `skipped` with the reason, or,
- * for a push while updates are off, the stored conclusion of the last reviewed
- * head, so a push cannot turn a failing check into a passing one.
+ * The check for a head nitpick does not review. Check runs belong to the commit, so this never
+ * posts a pass over a result the commit already has (see `resultToCarry`):
+ *
+ * - A skip rule (draft, label, author, base) posts the commit's own result when it has one,
+ *   else `skipped` with `reason`.
+ * - A head nobody asked to review (an open while `triggerOnOpen` is off, a push while
+ *   `triggerOnUpdates` is off) posts the commit's result, else this PR's newest. With neither it
+ *   posts nothing, so a required check stays pending until a review runs; `skipped` would pass it.
  */
 const postUnreviewed = Effect.fnUntraced(function* (
   ref: RepoRef,
@@ -226,47 +173,47 @@ const postUnreviewed = Effect.fnUntraced(function* (
   // The PR number lets Re-run find the PR where GitHub sends no `pull_requests`, as for a fork.
   const externalId = `${pull.number}`;
 
-  const skipped = (why: string): CheckRunState => ({
-    status: "completed",
-    conclusion: "skipped",
-    ...skippedCheckOutput(why),
-    externalId,
-  });
-
-  if (reason !== null) {
-    yield* quietly(github.createCheckRun(ref, checkName, pull.headSha, skipped(reason)));
-
-    return;
-  }
-
-  const [last] = yield* db
-    .select({ headSha: review.headSha, conclusion: review.checkConclusion })
+  const rows = yield* db
+    .select({
+      prNumber: review.prNumber,
+      headSha: review.headSha,
+      baseSha: review.baseSha,
+      conclusion: review.checkConclusion,
+    })
     .from(review)
     .where(
       and(
         eq(review.repositoryId, repositoryId),
-        eq(review.prNumber, pull.number),
-        // This head's own row counts too: a force-push back to a reviewed head keeps its result.
+        or(eq(review.prNumber, pull.number), eq(review.headSha, pull.headSha)),
         isNotNull(review.checkConclusion),
         isNotNull(review.finishedAt),
       ),
     )
-    // This head's own result first, so a newer head's pass never overrides a failure judged here.
+    // This commit's rows first, so the cap never drops a failure on it behind newer heads.
     .orderBy(sql`${review.headSha} = ${pull.headSha} desc`, desc(review.finishedAt))
-    .limit(1)
+    .limit(maxCarryRows)
     .pipe(Effect.orDie);
 
-  const run: CheckRunState =
-    last === undefined || last.conclusion === null
-      ? skipped("reviews on new pushes are off")
-      : {
-          status: "completed",
-          conclusion: last.conclusion,
-          ...carriedCheckOutput(last.headSha, last.conclusion),
-          externalId,
-        };
+  const stored = rows.flatMap(({ conclusion, ...row }) =>
+    conclusion === null ? [] : [{ ...row, conclusion }],
+  );
 
-  yield* quietly(github.createCheckRun(ref, checkName, pull.headSha, run));
+  const carry = resultToCarry(stored, pull);
+  const shown = carry.commit ?? (reason === null ? carry.pull : undefined);
+
+  const run: CheckRunState | null =
+    shown !== undefined
+      ? {
+          status: "completed",
+          conclusion: shown.conclusion,
+          ...carriedCheckOutput(shown.headSha, shown.conclusion),
+          externalId,
+        }
+      : reason !== null
+        ? { status: "completed", conclusion: "skipped", ...skippedCheckOutput(reason), externalId }
+        : null;
+
+  if (run !== null) yield* quietly(github.createCheckRun(ref, checkName, pull.headSha, run));
 });
 
 /** Fail reviews a dead worker left running. Longer than the job timeout and its retries. */
@@ -369,8 +316,16 @@ export const reviewPullRequest = Effect.fn("review.pull.run")(function* (payload
       config,
     );
 
-    if (reason !== null || (payload.trigger === "pushed" && !config.triggerOnUpdates)) {
-      yield* Effect.logInfo("review skipped", reason ?? "updates are off");
+    // Reviews run on a mention unless the repo opts in to opens or pushes.
+    const idle =
+      payload.trigger === "opened" && !config.triggerOnOpen
+        ? "not requested; reviews run on a mention"
+        : payload.trigger === "pushed" && !config.triggerOnUpdates
+          ? "reviews on new pushes are off"
+          : null;
+
+    if (reason !== null || idle !== null) {
+      yield* Effect.logInfo("review skipped", reason ?? idle);
 
       if (config.checks.enabled) yield* postUnreviewed(ref, repo.id, pull, reason);
 
@@ -518,33 +473,35 @@ export const reviewPullRequest = Effect.fn("review.pull.run")(function* (payload
       )
       .pipe(Effect.orDie);
 
-    const tools = yield* toolsFor(repo.id, ref, pull.headSha);
-
-    const result = yield* runAgent({
-      system: reviewSystem,
-      prompt: reviewPrompt(
-        {
-          title: pull.title,
-          body: pull.body,
-          author: pull.author,
-          baseBranch: pull.baseBranch,
-          files,
-          config,
-          rules: rules.map((item) => item.text),
-          noise: learned.filter((item) => item.verdict === "noise").map((item) => item.text),
-          useful: learned.filter((item) => item.verdict === "useful").map((item) => item.text),
-          previousFindings: previous.filter((item) => !isDismissed(item)).map(describeFinding),
-          dismissedFindings: previous.filter(isDismissed).map(describeFinding),
-        },
-        randomBytes(16).toString("hex"),
-      ),
-      tools,
-      finish: finishTool,
-      maxTurns: 30,
+    const tools = yield* toolsFor(repo.id, ref, {
+      prNumber: pull.number,
+      headSha: pull.headSha,
+      baseSha: pull.baseSha,
     });
 
+    const result = yield* runPanel(
+      {
+        title: pull.title,
+        body: pull.body,
+        author: pull.author,
+        baseBranch: pull.baseBranch,
+        files,
+        config,
+        rules: rules.map((item) => item.text),
+        noise: learned.filter((item) => item.verdict === "noise").map((item) => item.text),
+        useful: learned.filter((item) => item.verdict === "useful").map((item) => item.text),
+        previousFindings: previous.filter((item) => !isDismissed(item)).map(describeFinding),
+        dismissedFindings: previous.filter(isDismissed).map(describeFinding),
+      },
+      tools,
+      {
+        specialists: randomBytes(16).toString("hex"),
+        verifier: randomBytes(16).toString("hex"),
+      },
+    );
+
     const selected = selectFindings(
-      result.value.findings,
+      result.findings,
       files,
       config,
       new Set(previous.map((item) => item.fingerprint)),
@@ -561,12 +518,12 @@ export const reviewPullRequest = Effect.fn("review.pull.run")(function* (payload
           yield* tx
             .update(review)
             .set({
-              impact: result.value.impact,
-              verdict: sanitize(result.value.verdict),
-              summary: sanitize(result.value.summary),
-              changes: result.value.changes.slice(0, 8).map(sanitize),
+              impact: result.impact,
+              verdict: sanitize(result.verdict),
+              summary: sanitize(result.summary),
+              changes: result.changes.slice(0, 8).map(sanitize),
               repeated,
-              diagram: config.diagram ? (result.value.diagram ?? null) : null,
+              diagram: config.diagram ? (result.diagram ?? null) : null,
               model: claude.model,
               inputTokens: result.inputTokens,
               outputTokens: result.outputTokens,
@@ -586,6 +543,8 @@ export const reviewPullRequest = Effect.fn("review.pull.run")(function* (payload
               category: item.category,
               title: sanitize(item.title),
               body: sanitize(item.body),
+              scenario: item.scenario === null ? null : sanitize(item.scenario),
+              evidence: item.evidence === null ? null : sanitize(item.evidence),
               suggestion: item.suggestion ?? null,
               fingerprint: item.fingerprint,
               githubCommentId: null,
