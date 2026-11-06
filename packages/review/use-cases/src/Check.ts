@@ -103,3 +103,41 @@ export const carriedCheckOutput = (fromSha: string, conclusion: CheckConclusion)
   title: `Carried from ${fromSha.slice(0, 7)}: ${conclusion}`,
   summary: `Nitpick did not review this commit, so this is the result for ${fromSha.slice(0, 7)}. Re-run this check to review this commit.`,
 });
+
+/** A finished review's check result, as `resultToCarry` weighs it. */
+export interface StoredResult {
+  readonly prNumber: number;
+  readonly headSha: string;
+  readonly baseSha: string;
+  readonly conclusion: CheckConclusion;
+}
+
+/**
+ * The stored result a head nitpick does not review shows, from rows of this PR and of this
+ * commit on any PR, newest first. Check runs belong to the commit, so whatever is posted shows
+ * on every PR with that head.
+ *
+ * - `commit`: this commit's own result. Any failure on it wins, so no later run clears one.
+ *   Otherwise this PR's own result, then another PR's when it had the same base commit; a pass
+ *   judged against another base does not carry.
+ * - `pull`: the newest result of this PR, on any head. A push nitpick skips keeps it.
+ */
+export interface CarriedResults {
+  readonly commit: StoredResult | undefined;
+  readonly pull: StoredResult | undefined;
+}
+
+export const resultToCarry = (
+  rows: ReadonlyArray<StoredResult>,
+  pull: { readonly number: number; readonly headSha: string; readonly baseSha: string },
+): CarriedResults => {
+  const commit = rows.filter((row) => row.headSha === pull.headSha);
+
+  return {
+    commit:
+      commit.find((row) => row.conclusion === "failure") ??
+      commit.find((row) => row.prNumber === pull.number) ??
+      commit.find((row) => row.baseSha === pull.baseSha),
+    pull: rows.find((row) => row.prNumber === pull.number),
+  };
+};

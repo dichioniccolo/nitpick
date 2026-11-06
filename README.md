@@ -25,15 +25,17 @@ It reproduces the behavior of hosted reviewers such as Greptile. It shares no co
 - Scores each review from the findings it posts: 5/5 with none, 4 with P2 or P3 only, 3 with one P1,
   2 with several, 1 with any P0. A finding an earlier head raised and this head still has
   counts too, without being posted again.
-- Posts a `nitpick` check on each head it reviews or skips: `failure` when the confidence score is below
-  `checks.minConfidence` (default 5; 1 when `failOn` is `never`) or a finding reaches
+- Posts a `nitpick` check on each head it reviews or skips: `failure` when the confidence score is
+  below `checks.minConfidence` (default 5; 1 when `failOn` is `never`) or a finding reaches
   `checks.failOn` (default `P0`; the old `critical`, `major` and `minor` still read as P0, P1 and
-  P2), `neutral` when the review itself fails, and `skipped` when a skip rule applies (draft, label,
-  author, base branch). On a head it does not review because nobody asked (an open while
-  `triggerOnOpen` is off, a push while `triggerOnUpdates` is off) it repeats the last result of this
-  PR, or of the same commit on any PR, and posts no check when there is none, so a required check
-  waits for a review instead of passing. Re-run on the check reviews that head;
-  `checks.enabled: false` turns it off. Require it in branch protection to gate merges.
+  P2), and `neutral` when the review itself fails. Check runs belong to the commit, so a head it
+  does not review never gets a pass over a result its commit already has: any failure on the commit
+  wins, then this PR's result, then another PR's on the same base. A skip rule (draft, label,
+  author, base branch) shows that result, else `skipped`. A head nobody asked to review (an open
+  while `triggerOnOpen` is off, a push while `triggerOnUpdates` is off) shows it, else this PR's
+  newest result, else no check, so a required check waits for a review instead of passing. Re-run
+  on the check reviews that head; `checks.enabled: false` turns it off. Require it in branch
+  protection to gate merges.
 - Writes one summary comment per PR in Greptile's layout: confidence score, an impact-tagged verdict,
   a summary with bullets, the sequence diagram, and View in Nitpick and Retrigger buttons. Retrigger
   opens a confirm page in the dashboard, open to repository members only.

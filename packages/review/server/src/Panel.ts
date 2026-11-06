@@ -19,6 +19,7 @@ import {
   verifierPrompt,
   verifierSystem,
 } from "@nitpick/review-use-cases";
+import * as Duration from "effect/Duration";
 import * as Effect from "effect/Effect";
 import * as Match from "effect/Match";
 import * as Predicate from "effect/Predicate";
@@ -132,6 +133,13 @@ const submitReview = {
 const specialistTurns = 20;
 const verifierTurns = 30;
 
+/**
+ * Wall time per run. The specialists run side by side, then the verifier, so a review takes at
+ * most both together: 24 minutes, inside the worker's 30 minute job timeout.
+ */
+const specialistTimeout = Duration.minutes(12);
+const verifierTimeout = Duration.minutes(12);
+
 export interface PanelResult {
   readonly impact: Impact;
   readonly verdict: string;
@@ -199,6 +207,7 @@ export const runPanel = Effect.fn("review.panel.run")(function* (
         tools,
         finish: submitFindings,
         maxTurns: specialistTurns,
+        timeout: specialistTimeout,
       }).pipe(
         Effect.withSpan("review.specialist.run", { attributes: { specialist } }),
         Effect.tapError((error) =>
@@ -225,6 +234,7 @@ export const runPanel = Effect.fn("review.panel.run")(function* (
     tools,
     finish: submitReview,
     maxTurns: verifierTurns,
+    timeout: verifierTimeout,
   }).pipe(Effect.withSpan("review.verifier.run"));
 
   const { confirmed, rejected } = applyVerdicts(candidates, verified.value.verdicts);

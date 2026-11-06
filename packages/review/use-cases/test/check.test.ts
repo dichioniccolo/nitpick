@@ -8,6 +8,7 @@ import {
   carriedCheckOutput,
   checkConclusion,
   completedCheckOutput,
+  resultToCarry,
   skippedCheckOutput,
   truncateSummary,
 } from "../src/index.ts";
@@ -140,4 +141,35 @@ describe("checks config", () => {
       assert.isTrue(Exit.isFailure(bad));
     }),
   );
+});
+
+describe("resultToCarry", () => {
+  const pull = { number: 1, headSha: "h1", baseSha: "b1" };
+
+  const row = (
+    prNumber: number,
+    headSha: string,
+    conclusion: "success" | "failure",
+    baseSha = "b1",
+  ) => ({ prNumber, headSha, baseSha, conclusion });
+
+  it("lets any failure on the commit win over a newer pass", () => {
+    const carry = resultToCarry([row(1, "h1", "success"), row(2, "h1", "failure", "b9")], pull);
+    assert.strictEqual(carry.commit?.conclusion, "failure");
+    assert.strictEqual(carry.commit?.prNumber, 2);
+  });
+  it("prefers this PR's own result, then another PR's only on the same base", () => {
+    assert.strictEqual(
+      resultToCarry([row(2, "h1", "success"), row(1, "h1", "success")], pull).commit?.prNumber,
+      1,
+    );
+    assert.strictEqual(resultToCarry([row(2, "h1", "success")], pull).commit?.prNumber, 2);
+    assert.isUndefined(resultToCarry([row(2, "h1", "success", "b9")], pull).commit);
+  });
+  it("falls back to the newest result of this PR on any head", () => {
+    const carry = resultToCarry([row(3, "h7", "failure"), row(1, "h0", "failure")], pull);
+    assert.isUndefined(carry.commit);
+    assert.strictEqual(carry.pull?.headSha, "h0");
+    assert.isUndefined(resultToCarry([], pull).pull);
+  });
 });

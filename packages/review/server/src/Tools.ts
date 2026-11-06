@@ -1,5 +1,5 @@
 import { CodeSearch } from "@nitpick/code-graph-server";
-import { GitHub, type RepoRef } from "@nitpick/github";
+import { GitHub, type GitHubError, type RepoRef } from "@nitpick/github";
 import type { Json } from "@nitpick/review-domain";
 import * as Effect from "effect/Effect";
 import * as S from "effect/Schema";
@@ -63,6 +63,22 @@ const side = {
 } as const;
 
 const maxCommitMessage = 500;
+
+/**
+ * A GitHub failure as the tool error the model reads: what failed and the status, never the
+ * cause, which can carry request details. The log keeps the operation for the operator.
+ */
+const githubFailure =
+  (what: string) =>
+  <A, R>(effect: Effect.Effect<A, GitHubError, R>): Effect.Effect<A, Error, R> =>
+    effect.pipe(
+      Effect.tapError((error) =>
+        Effect.logDebug("agent tool GitHub failure").pipe(
+          Effect.annotateLogs({ operation: error.operation, status: error.status ?? "none" }),
+        ),
+      ),
+      Effect.mapError((error) => new Error(`GitHub ${what}: ${error.status ?? "no status"}`)),
+    );
 
 /** The pull request the tools read: its number, and the two commits it compares. */
 export interface ToolTarget {
@@ -128,9 +144,7 @@ export const toolsFor = Effect.fnUntraced(function* (
       Read,
       ({ path, startLine = 1, endLine, ref: which }) =>
         github.fileText(ref, path, shaOf(which)).pipe(
-          Effect.mapError(
-            (error) => new Error(`GitHub read failed for ${path}: ${error.status ?? "network"}`),
-          ),
+          githubFailure(`read failed for ${path}`),
           Effect.map((content) => {
             if (content === null) return `${path} does not exist at this commit.`;
             const lines = content.split("\n");
@@ -154,9 +168,7 @@ export const toolsFor = Effect.fnUntraced(function* (
       List,
       ({ path, ref: which }) =>
         github.listDirectory(ref, path, shaOf(which)).pipe(
-          Effect.mapError(
-            (error) => new Error(`GitHub list failed for ${path}: ${error.status ?? "network"}`),
-          ),
+          githubFailure(`list failed for ${path}`),
           Effect.map((entries) =>
             entries === null
               ? `${path} is not a directory at this commit.`
@@ -172,9 +184,7 @@ export const toolsFor = Effect.fnUntraced(function* (
       None,
       () =>
         github.pullCommits(ref, target.prNumber).pipe(
-          Effect.mapError(
-            (error) => new Error(`GitHub commit list failed: ${error.status ?? "network"}`),
-          ),
+          githubFailure("commit list failed"),
           Effect.map((commits) =>
             asJson(
               commits.map((commit) => ({

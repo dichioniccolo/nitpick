@@ -29,15 +29,18 @@ import { TreeSitter } from "@nitpick/tree-sitter";
 import { eq, sql } from "drizzle-orm";
 import * as Cause from "effect/Cause";
 import * as Deferred from "effect/Deferred";
+import * as Duration from "effect/Duration";
 import * as Effect from "effect/Effect";
 import * as Exit from "effect/Exit";
 import * as Fiber from "effect/Fiber";
 import * as Layer from "effect/Layer";
 import * as Predicate from "effect/Predicate";
+import * as TestClock from "effect/testing/TestClock";
 import { createTarGzip } from "nanotar";
 
 import { type ClaimedJob, handleWebhook, Queue, Settings, verifySignature } from "../src/web.ts";
 import {
+  AgentError,
   reviewPullRequest,
   sweepStuckReviews,
   syncFeedback,
@@ -925,6 +928,30 @@ describe("hardening", () => {
       }),
     );
 
+    it.effect("a run past its timeout fails as an AgentError, not a hang", () =>
+      Effect.gen(function* () {
+        yield* secondRun;
+        const hang = yield* Deferred.make<void>();
+        state.hang = hang;
+        const fiber = yield* Effect.forkChild(Effect.exit(reviewPullRequest(opened(26))));
+        yield* Deferred.await(hang);
+        // Every specialist times out, so the review fails with the run's own reason.
+        yield* TestClock.adjust(Duration.minutes(13));
+        const exit = yield* Fiber.join(fiber);
+        assert.isTrue(Exit.isFailure(exit));
+
+        if (Exit.isFailure(exit)) {
+          const error = Cause.squash(exit.cause);
+          assert.isTrue(Predicate.isTagged(error, "AgentError"));
+          assert.include(error instanceof AgentError ? error.reason : "", "timed out after 12m");
+        }
+
+        const [row] = yield* reviewRow(26);
+        assert.strictEqual(row?.status, "failed");
+        assert.strictEqual(row?.error, "AgentError");
+      }),
+    );
+
     it.effect("sweeps reviews left running, by when the run started", () =>
       Effect.gen(function* () {
         yield* secondRun;
@@ -1406,6 +1433,12 @@ describe("check runs", () => {
         assert.strictEqual(creates().at(-1)?.run.conclusion, "failure");
         assert.strictEqual(creates().at(-1)?.run.externalId, "85");
         assert.lengthOf(state.requests, perReview);
+
+        // A skip rule on that commit carries its failure instead of a passing `skipped`.
+        state.pull = { draft: true };
+        yield* reviewPullRequest(opened(80));
+        assert.strictEqual(creates().at(-1)?.run.conclusion, "failure");
+        state.pull = {};
       }),
     );
 
