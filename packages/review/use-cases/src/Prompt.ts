@@ -71,7 +71,10 @@ export const reviewPrompt = (context: ReviewContext, nonce: string): string => {
       context.noise,
     ),
     ...list("The team found these past findings useful", context.useful),
-    ...list("Already raised on this PR. Do not repeat them", context.previousFindings),
+    ...list(
+      "Already raised on this PR. Report each again, with the same path, category and title, while this head still has it; it is not posted twice. Leave out the ones this head fixed",
+      context.previousFindings,
+    ),
   ].join("\n\n");
 
   return [
@@ -83,6 +86,6 @@ export const reviewPrompt = (context: ReviewContext, nonce: string): string => {
     }.`,
     "## Pull request",
     `<untrusted-${nonce}>\n${pullRequest}\n</untrusted-${nonce}>`,
-    "Past findings listed in that block are feedback from earlier reviews: do not repeat them or raise ones like the noise list. Review this pull request and finish by calling submit_review.",
+    "Past findings listed in that block are feedback from earlier reviews: raise nothing like the noise list, and report an already raised finding again only while this head still has it. Review this pull request and finish by calling submit_review.",
   ].join("\n\n");
 };

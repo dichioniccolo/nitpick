@@ -65,6 +65,8 @@ interface State {
   branch: string;
   tree: ReadonlyArray<{ readonly name: string; readonly data: string }>;
   severity: "critical" | "major" | "minor";
+  /** The head fixed the finding, so the model stops reporting it. */
+  fixed: boolean;
   checkWrites: Array<CheckWrite>;
   /** Fail every check write with this status, as an install without the Checks permission does. */
   failChecks: number | null;
@@ -113,6 +115,7 @@ const initial = (): State => ({
   branch: "base1",
   tree: [billing, { name: "acme-api-base1/node_modules/x/index.js", data: "function hidden() {}" }],
   severity: "major",
+  fixed: false,
   checkWrites: [],
   failChecks: null,
   failCheckUpdates: null,
@@ -287,14 +290,18 @@ const fakeClaude = {
                 summary: "Adds audit. cc @octocat",
                 changes: ["Calls audit on every charge"],
                 findings: [
-                  {
-                    path: "src/billing.ts",
-                    line: 2,
-                    severity: state.severity,
-                    category: "logic",
-                    title: "audit undefined",
-                    body: "No import.",
-                  },
+                  ...(state.fixed
+                    ? []
+                    : [
+                        {
+                          path: "src/billing.ts",
+                          line: 2,
+                          severity: state.severity,
+                          category: "logic",
+                          title: "audit undefined",
+                          body: "No import.",
+                        },
+                      ]),
                   {
                     path: "src/billing.ts",
                     line: 99,
@@ -1151,6 +1158,39 @@ describe("check runs", () => {
         yield* reviewPullRequest(opened(65));
         assert.strictEqual(latest(704)?.conclusion, "success");
       }),
+    );
+
+    it.effect(
+      "a later head that still has an earlier critical keeps failing until it is fixed",
+      () =>
+        Effect.gen(function* () {
+          yield* fresh;
+          state.severity = "critical";
+          yield* reviewPullRequest(opened(66));
+          assert.strictEqual(latest(700)?.conclusion, "failure");
+          const inline = state.comments.length;
+
+          // The model reports it again on head2: not posted twice, but it still scores and gates.
+          state.head = "head2";
+          yield* reviewPullRequest({ ...opened(66, "head2"), trigger: "requested" });
+          assert.strictEqual(latest(701)?.conclusion, "failure");
+          assert.strictEqual(latest(701)?.title, "1 critical");
+          assert.lengthOf(state.comments, inline);
+          const again = state.summaries.at(-1) ?? "";
+          assert.include(again, "## Confidence Score: 1/5");
+          assert.include(again, "**Still open from earlier reviews:** 1 critical");
+          assert.strictEqual(
+            (yield* reviewRow(66)).find((row) => row.headSha === "head2")?.confidence,
+            1,
+          );
+
+          // head3 fixes it: the model stops reporting it, and the check clears.
+          state.head = "head3";
+          state.fixed = true;
+          yield* reviewPullRequest({ ...opened(66, "head3"), trigger: "requested" });
+          assert.strictEqual(latest(702)?.conclusion, "success");
+          assert.include(state.summaries.at(-1) ?? "", "## Confidence Score: 5/5");
+        }),
     );
 
     it.effect("ends neutral when the review fails, and a retry opens a new run", () =>

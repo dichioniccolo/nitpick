@@ -78,6 +78,13 @@ export const review = pgTable(
     /** The summary's bullets, one per notable change. */
     changes: jsonb().$type<ReadonlyArray<string>>(),
     confidence: integer(),
+    /** Findings an earlier head raised that this head still has. They count toward the score and the check. */
+    repeated: jsonb().$type<
+      ReadonlyArray<{
+        readonly fingerprint: string;
+        readonly severity: "critical" | "major" | "minor";
+      }>
+    >(),
     diagram: text(),
     error: text(),
     model: text(),

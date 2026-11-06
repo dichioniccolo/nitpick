@@ -27,6 +27,7 @@ import {
   confidenceOf,
   failedCheckOutput,
   fingerprintFromBody,
+  openFindings,
   type PlacedFinding,
   renderFinding,
   renderSummary,
@@ -427,6 +428,7 @@ export const reviewPullRequest = Effect.fn("review.pull.run")(function* (payload
             summary: null,
             changes: null,
             confidence: null,
+            repeated: null,
             diagram: null,
           },
     })
@@ -484,7 +486,12 @@ export const reviewPullRequest = Effect.fn("review.pull.run")(function* (payload
       .pipe(Effect.orDie);
 
     const previous = yield* db
-      .select({ title: finding.title, path: finding.path, fingerprint: finding.fingerprint })
+      .select({
+        title: finding.title,
+        path: finding.path,
+        category: finding.category,
+        fingerprint: finding.fingerprint,
+      })
       .from(finding)
       .innerJoin(review, eq(review.id, finding.reviewId))
       .where(
@@ -516,7 +523,9 @@ export const reviewPullRequest = Effect.fn("review.pull.run")(function* (payload
           rules: rules.map((item) => item.text),
           noise: learned.filter((item) => item.verdict === "noise").map((item) => item.text),
           useful: learned.filter((item) => item.verdict === "useful").map((item) => item.text),
-          previousFindings: previous.map((item) => `${item.path}: ${item.title}`),
+          previousFindings: previous.map(
+            (item) => `${item.path} (${item.category}): ${item.title}`,
+          ),
         },
         randomBytes(16).toString("hex"),
       ),
@@ -525,7 +534,7 @@ export const reviewPullRequest = Effect.fn("review.pull.run")(function* (payload
       maxTurns: 30,
     });
 
-    const placed = selectFindings(
+    const { posted: placed, repeated } = selectFindings(
       result.value.findings,
       files,
       config,
@@ -542,7 +551,7 @@ export const reviewPullRequest = Effect.fn("review.pull.run")(function* (payload
               verdict: sanitize(result.value.verdict),
               summary: sanitize(result.value.summary),
               changes: result.value.changes.slice(0, 8).map(sanitize),
-              confidence: confidenceOf(placed),
+              repeated,
               diagram: config.diagram ? (result.value.diagram ?? null) : null,
               model: claude.model,
               inputTokens: result.inputTokens,
@@ -650,12 +659,19 @@ export const reviewPullRequest = Effect.fn("review.pull.run")(function* (payload
         verdict: review.verdict,
         summary: review.summary,
         changes: review.changes,
-        confidence: review.confidence,
+        repeated: review.repeated,
         diagram: review.diagram,
       })
       .from(review)
       .where(eq(review.id, reviewId))
       .pipe(Effect.orDie);
+
+    // Repeats an earlier head raised count with what this head posted, or a push past an unfixed
+    // critical would read 5/5 and pass.
+    const repeated = saved?.repeated ?? [];
+    const open = openFindings(stored, repeated);
+    const confidence = confidenceOf(open);
+    const posted = new Set(stored.map((item) => item.fingerprint));
 
     // Earlier completed reviews on this PR, plus this one.
     const [earlier] = yield* db
@@ -680,10 +696,11 @@ export const reviewPullRequest = Effect.fn("review.pull.run")(function* (payload
         verdict: saved?.verdict ?? null,
         changes: saved?.changes ?? [],
         summary: saved?.summary ?? "",
-        confidence: saved?.confidence ?? 1,
+        confidence,
         diagram: saved?.diagram ?? undefined,
         findings: stored.map(toPlaced),
         unplaced: stored.filter((item) => item.githubCommentId === null).map(toPlaced),
+        stillOpen: repeated.filter((item) => !posted.has(item.fingerprint)),
         reviewUrl,
         retriggerUrl: `${reviewUrl}/retrigger`,
         badgesUrl: `${settings.appUrl}/badges`,
@@ -695,7 +712,7 @@ export const reviewPullRequest = Effect.fn("review.pull.run")(function* (payload
       }),
     );
 
-    const conclusion = checkConclusion(stored, saved?.confidence ?? 1, config.checks);
+    const conclusion = checkConclusion(open, confidence, config.checks);
 
     // Before the row turns `completed`: a crash in between leaves `running`, and the retry reuses this run.
     yield* finishCheckRun({
@@ -703,8 +720,8 @@ export const reviewPullRequest = Effect.fn("review.pull.run")(function* (payload
       conclusion,
       ...completedCheckOutput({
         summary: saved?.summary ?? "",
-        confidence: saved?.confidence ?? 1,
-        findings: stored,
+        confidence,
+        findings: open,
         gate: config.checks,
         reviewUrl,
       }),
@@ -714,6 +731,7 @@ export const reviewPullRequest = Effect.fn("review.pull.run")(function* (payload
       .update(review)
       .set({
         status: "completed",
+        confidence,
         summaryCommentId,
         checkConclusion: conclusion,
         finishedAt: sql`now()`,

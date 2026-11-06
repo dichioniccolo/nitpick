@@ -185,6 +185,8 @@ export interface SummaryInput {
   readonly findings: ReadonlyArray<PlacedFinding>;
   /** Findings GitHub refused to place inline. They are listed in the comment instead. */
   readonly unplaced: ReadonlyArray<PlacedFinding>;
+  /** Findings an earlier review raised that this head still has. Counted, not posted again. */
+  readonly stillOpen: ReadonlyArray<{ readonly severity: Severity }>;
   readonly reviewUrl: string;
   readonly retriggerUrl: string;
   /** Where the button images are served, `<APP_URL>/badges`. */
@@ -238,6 +240,10 @@ export const renderSummary = (input: SummaryInput): string => {
   if (input.changes.length > 0) parts.push(input.changes.map(bullet).join("\n"));
 
   parts.push(`**Findings:** ${counts.length > 0 ? counts.join(", ") : "no issues found"}`);
+
+  const open = severityCounts(input.stillOpen);
+
+  if (open.length > 0) parts.push(`**Still open from earlier reviews:** ${open.join(", ")}`);
 
   if (input.diagram !== undefined && input.diagram.trim() !== "") {
     const diagram = escapeSequenceDiagram(unwrapFence(stripNul(input.diagram)));
