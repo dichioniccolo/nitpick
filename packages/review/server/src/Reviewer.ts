@@ -189,7 +189,8 @@ const postUnreviewed = Effect.fnUntraced(function* (
         isNotNull(review.finishedAt),
       ),
     )
-    .orderBy(desc(review.finishedAt))
+    // This commit's rows first, so the cap never drops a failure on it behind newer heads.
+    .orderBy(sql`${review.headSha} = ${pull.headSha} desc`, desc(review.finishedAt))
     .limit(maxCarryRows)
     .pipe(Effect.orDie);
 

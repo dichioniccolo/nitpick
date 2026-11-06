@@ -73,7 +73,7 @@ const githubFailure =
   <A, R>(effect: Effect.Effect<A, GitHubError, R>): Effect.Effect<A, Error, R> =>
     effect.pipe(
       Effect.tapError((error) =>
-        Effect.logDebug("agent tool GitHub failure").pipe(
+        Effect.logWarning("agent tool GitHub failure").pipe(
           Effect.annotateLogs({ operation: error.operation, status: error.status ?? "none" }),
         ),
       ),

@@ -221,7 +221,8 @@ export const describeFailure = (cause: Cause.Cause<unknown>): string => {
   return [tag, ...field("operation"), ...field("status"), ...postgresReason()].join(" ");
 };
 
-const call = <A>(operation: string, run: () => Promise<A>) =>
+/** `run` gets the fiber's abort signal, so an interrupted call cancels its HTTP request. */
+const call = <A>(operation: string, run: (signal: AbortSignal) => Promise<A>) =>
   Effect.tryPromise({
     try: run,
     catch: (cause) => new GitHubError({ operation, status: statusOf(cause), cause }),
@@ -297,7 +298,8 @@ const WireEntry = S.Struct({ name: S.String, type: S.String });
 
 const WireCommit = S.Struct({
   sha: S.String,
-  author: S.optionalKey(S.NullOr(WireLogin)),
+  // GitHub can send `{}` for a commit whose email matches no account.
+  author: S.optionalKey(S.NullOr(S.Struct({ login: S.optionalKey(S.String) }))),
   commit: S.Struct({ message: S.String }),
 });
 
@@ -326,7 +328,7 @@ export type RawResponse = object | string | null;
 export const request = <W, A>(
   operation: string,
   wire: S.Decoder<W>,
-  run: () => Promise<RawResponse>,
+  run: (signal: AbortSignal) => Promise<RawResponse>,
   map: (data: W) => A,
 ): Effect.Effect<A, GitHubError> => {
   const decode = S.decodeUnknownEffect(wire);
@@ -363,10 +365,11 @@ export class GitHub extends Context.Service<GitHub, GitHubApi>()("@nitpick/githu
           request(
             "listRepositories",
             S.Array(WireRepository),
-            async () => {
+            async (signal) => {
               const octokit = await client(installationId);
 
               return octokit.paginate(octokit.rest.apps.listReposAccessibleToInstallation, {
+                request: { signal },
                 per_page: 100,
               });
             },
@@ -382,11 +385,12 @@ export class GitHub extends Context.Service<GitHub, GitHubApi>()("@nitpick/githu
           request(
             "branchSha",
             WireBranch,
-            async () =>
+            async (signal) =>
               (
                 await (
                   await client(ref.installationId)
                 ).rest.repos.getBranch({
+                  request: { signal },
                   owner: ref.owner,
                   repo: ref.repo,
                   branch,
@@ -398,11 +402,15 @@ export class GitHub extends Context.Service<GitHub, GitHubApi>()("@nitpick/githu
           request(
             "repositorySize",
             WireRepositorySize,
-            async () =>
+            async (signal) =>
               (
                 await (
                   await client(ref.installationId)
-                ).rest.repos.get({ owner: ref.owner, repo: ref.repo })
+                ).rest.repos.get({
+                  request: { signal },
+                  owner: ref.owner,
+                  repo: ref.repo,
+                })
               ).data,
             (data) => data.size,
           ),
@@ -410,10 +418,11 @@ export class GitHub extends Context.Service<GitHub, GitHubApi>()("@nitpick/githu
           request(
             "tarball",
             WireBinary,
-            async () => {
+            async (signal) => {
               const octokit = await client(ref.installationId);
 
               const { data } = await octokit.rest.repos.downloadTarballArchive({
+                request: { signal },
                 owner: ref.owner,
                 repo: ref.repo,
                 ref: sha,
@@ -428,11 +437,12 @@ export class GitHub extends Context.Service<GitHub, GitHubApi>()("@nitpick/githu
           request(
             "pullRequest",
             WirePull,
-            async () =>
+            async (signal) =>
               (
                 await (
                   await client(ref.installationId)
                 ).rest.pulls.get({
+                  request: { signal },
                   owner: ref.owner,
                   repo: ref.repo,
                   pull_number: number,
@@ -457,10 +467,11 @@ export class GitHub extends Context.Service<GitHub, GitHubApi>()("@nitpick/githu
           request(
             "pullFiles",
             S.Array(WireFile),
-            async () => {
+            async (signal) => {
               const octokit = await client(ref.installationId);
 
               return octokit.paginate(octokit.rest.pulls.listFiles, {
+                request: { signal },
                 owner: ref.owner,
                 repo: ref.repo,
                 pull_number: number,
@@ -474,11 +485,12 @@ export class GitHub extends Context.Service<GitHub, GitHubApi>()("@nitpick/githu
           request(
             "fileText",
             S.Unknown,
-            async () => {
+            async (signal) => {
               const octokit = await client(ref.installationId);
 
               try {
                 const { data } = await octokit.rest.repos.getContent({
+                  request: { signal },
                   owner: ref.owner,
                   repo: ref.repo,
                   path,
@@ -499,11 +511,12 @@ export class GitHub extends Context.Service<GitHub, GitHubApi>()("@nitpick/githu
           request(
             "listDirectory",
             S.NullOr(S.Array(WireEntry)),
-            async () => {
+            async (signal) => {
               const octokit = await client(ref.installationId);
 
               try {
                 const { data } = await octokit.rest.repos.getContent({
+                  request: { signal },
                   owner: ref.owner,
                   repo: ref.repo,
                   path,
@@ -527,10 +540,11 @@ export class GitHub extends Context.Service<GitHub, GitHubApi>()("@nitpick/githu
           request(
             "pullCommits",
             S.Array(WireCommit),
-            async () => {
+            async (signal) => {
               const octokit = await client(ref.installationId);
 
               return octokit.paginate(octokit.rest.pulls.listCommits, {
+                request: { signal },
                 owner: ref.owner,
                 repo: ref.repo,
                 pull_number: number,
@@ -548,10 +562,11 @@ export class GitHub extends Context.Service<GitHub, GitHubApi>()("@nitpick/githu
           request(
             "createReview",
             S.Array(WirePosted),
-            async () => {
+            async (signal) => {
               const octokit = await client(ref.installationId);
 
               const { data } = await octokit.rest.pulls.createReview({
+                request: { signal },
                 owner: ref.owner,
                 repo: ref.repo,
                 pull_number: number,
@@ -561,6 +576,7 @@ export class GitHub extends Context.Service<GitHub, GitHubApi>()("@nitpick/githu
               });
 
               return octokit.paginate(octokit.rest.pulls.listCommentsForReview, {
+                request: { signal },
                 owner: ref.owner,
                 repo: ref.repo,
                 pull_number: number,
@@ -574,13 +590,14 @@ export class GitHub extends Context.Service<GitHub, GitHubApi>()("@nitpick/githu
           request(
             "upsertComment",
             WireId,
-            async () => {
+            async (signal) => {
               const octokit = await client(ref.installationId);
 
               if (commentId !== null) {
                 try {
                   return (
                     await octokit.rest.issues.updateComment({
+                      request: { signal },
                       owner: ref.owner,
                       repo: ref.repo,
                       comment_id: commentId,
@@ -595,6 +612,7 @@ export class GitHub extends Context.Service<GitHub, GitHubApi>()("@nitpick/githu
 
               return (
                 await octokit.rest.issues.createComment({
+                  request: { signal },
                   owner: ref.owner,
                   repo: ref.repo,
                   issue_number: number,
@@ -608,10 +626,11 @@ export class GitHub extends Context.Service<GitHub, GitHubApi>()("@nitpick/githu
           request(
             "listReviewComments",
             S.Array(WireComment),
-            async () => {
+            async (signal) => {
               const octokit = await client(ref.installationId);
 
               return octokit.paginate(octokit.rest.pulls.listReviewComments, {
+                request: { signal },
                 owner: ref.owner,
                 repo: ref.repo,
                 pull_number: number,
@@ -624,10 +643,11 @@ export class GitHub extends Context.Service<GitHub, GitHubApi>()("@nitpick/githu
           request(
             "listIssueComments",
             S.Array(WireComment),
-            async () => {
+            async (signal) => {
               const octokit = await client(ref.installationId);
 
               return octokit.paginate(octokit.rest.issues.listComments, {
+                request: { signal },
                 owner: ref.owner,
                 repo: ref.repo,
                 issue_number: number,
@@ -640,10 +660,11 @@ export class GitHub extends Context.Service<GitHub, GitHubApi>()("@nitpick/githu
           request(
             "commentReactions",
             S.Array(WireReaction),
-            async () => {
+            async (signal) => {
               const octokit = await client(ref.installationId);
 
               return octokit.paginate(octokit.rest.reactions.listForPullRequestReviewComment, {
+                request: { signal },
                 owner: ref.owner,
                 repo: ref.repo,
                 comment_id: commentId,
@@ -656,11 +677,12 @@ export class GitHub extends Context.Service<GitHub, GitHubApi>()("@nitpick/githu
           request(
             "createCheckRun",
             WireId,
-            async () =>
+            async (signal) =>
               (
                 await (
                   await client(ref.installationId)
                 ).rest.checks.create({
+                  request: { signal },
                   owner: ref.owner,
                   repo: ref.repo,
                   name,
@@ -671,10 +693,11 @@ export class GitHub extends Context.Service<GitHub, GitHubApi>()("@nitpick/githu
             (data) => data.id,
           ),
         updateCheckRun: (ref, checkRunId, run) =>
-          call("updateCheckRun", async () => {
+          call("updateCheckRun", async (signal) => {
             const octokit = await client(ref.installationId);
 
             await octokit.rest.checks.update({
+              request: { signal },
               owner: ref.owner,
               repo: ref.repo,
               check_run_id: checkRunId,
@@ -685,12 +708,13 @@ export class GitHub extends Context.Service<GitHub, GitHubApi>()("@nitpick/githu
           request(
             "userPermission",
             S.NullOr(WirePermission),
-            async () => {
+            async (signal) => {
               const octokit = await client(ref.installationId);
 
               try {
                 return (
                   await octokit.rest.repos.getCollaboratorPermissionLevel({
+                    request: { signal },
                     owner: ref.owner,
                     repo: ref.repo,
                     username,
